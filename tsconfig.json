@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "Node",
+    "lib": ["esnext", "DOM", "DOM.Iterable"],
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "sourceMap": true,
+    "outDir": "dist",
+    "baseUrl": "src",
+    "skipLibCheck": true,
+    "strict": true
+  },
+  "exclude": ["node_modules", "examples", "build", "tests"]
+
+}
