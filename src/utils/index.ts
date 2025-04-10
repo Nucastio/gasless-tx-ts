@@ -98,11 +98,11 @@ export const calculateFees = (
     for (const redeemer of tx.witnessSet().redeemers()!.values()) {
       scriptFee +=
         (redeemer.exUnits().mem() * BigInt(priceMemNumerator.toString())) /
-          BigInt(priceMemDenominator.toString()) +
+        BigInt(priceMemDenominator.toString()) +
         BigInt(1);
       scriptFee +=
         (redeemer.exUnits().steps() * BigInt(priceStepNumerator.toString())) /
-          BigInt(priceStepDenominator.toString()) +
+        BigInt(priceStepDenominator.toString()) +
         BigInt(1);
     }
   }
@@ -249,10 +249,11 @@ export function countNumberOfRequiredWitnesses(
 
   // Handle native scripts in provided scripts
   for (const scriptHex of scriptsProvided) {
-    const script = Script.fromCbor(HexBlob(scriptHex));
-    let nativeScript = script.asNative();
-    if (nativeScript) {
-      addKeyHashesFromNativeScript(nativeScript, requiredWitnesses);
+    try {
+      const script = NativeScript.fromCbor(HexBlob(scriptHex));
+      addKeyHashesFromNativeScript(script, requiredWitnesses);
+    } catch (error) {
+      continue
     }
   }
 
