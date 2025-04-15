@@ -36,7 +36,7 @@ export async function sponsorTx(this: Gasless, {
   if (!poolId || typeof poolId !== 'string') {
     throw new Error('Invalid poolId');
   }
-  if (utxo && isValidUTxO(utxo)) {
+  if (utxo && !isValidUTxO(utxo)) {
     throw new Error('Invalid UTxO');
   }
 
