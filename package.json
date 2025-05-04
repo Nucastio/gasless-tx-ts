@@ -1,6 +1,6 @@
 {
   "name": "@nucastio/gasless",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Gasless Tx Library for Cardano",
   "author": "Nucast",
   "homepage": "https://nucast.io",

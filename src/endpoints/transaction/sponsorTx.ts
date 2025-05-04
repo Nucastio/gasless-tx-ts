@@ -189,11 +189,12 @@ export async function sponsorTx(this: Gasless, {
   let adjustedSponsorOutput = new TransactionOutput(
     toCardanoAddress(sponsorUtxo.output.address),
     toValue(
-      sponsorUtxo.output.amount.map((a) =>
-        a.unit === "lovelace"
-          ? { unit: a.unit, quantity: String(BigInt(a.quantity) - calculatedFee) }
-          : a
-      )
+      sponsorUtxo.output.amount.map(a => ({
+        ...a,
+        quantity: a.unit === "lovelace" 
+          ? String(BigInt(a.quantity) - calculatedFee) 
+          : a.quantity
+      }))
     )
   );
 
