@@ -10,7 +10,7 @@ import {
   Serialization
 } from "@meshsdk/core-cst";
 
-import { Gasless, SponsorTxParams } from "../../@types/types";
+import { Gasless, GaslessClient, SponsorTxParams } from "../../@types/types";
 import { calculateFees, countNumberOfRequiredWitnesses, createDummyTx, HexBlob, TxCBOR } from "../../utils";
 import { UTxO, keepRelevant } from "@meshsdk/core";
 
@@ -24,7 +24,7 @@ function isValidUTxO(utxo: any): utxo is UTxO {
 }
 
 
-export async function sponsorTx(this: Gasless, {
+export async function sponsorTx(this: Gasless | GaslessClient, {
   txCbor,
   utxo,
   poolId,

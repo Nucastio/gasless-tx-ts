@@ -7,19 +7,17 @@ import json from "@rollup/plugin-json";
 export default [
   // browser-friendly UMD build
   {
-    input: "src/index.ts",
-    output: {
-      name: "typescriptNpmPackage",
-      file: pkg.browser,
-      format: "es",
-      sourcemap: true,
-    },
+    input: "src/client.ts",
+    output: [
+      { file: 'dist/browser/gaslessClient.mjs', format: 'es',  sourcemap: true },
+    ],
     plugins: [
       resolve({ browser: true }), //
       commonjs(),
       json(),
       typescript({ tsconfig: "./tsconfig.json" }),
     ],
+    external: ["express"],
   },
 
   // CommonJS (for Node) and ES module (for bundlers) build.

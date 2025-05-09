@@ -8,11 +8,11 @@ import {
   TransactionOutput,
 } from "@meshsdk/core-cst";
 import { TxCBOR, ValidationError } from "../../utils";
-import { Gasless, PoolConditions, ValidateTxParams } from "../../@types/types";
+import { Gasless, GaslessClient, PoolConditions, ValidateTxParams } from "../../@types/types";
 import axios from "axios";
 
 export async function validateTx(
-  this: Gasless,
+  this: Gasless | GaslessClient,
   { txCbor, poolSignServer }: ValidateTxParams
 ): Promise<TxCBOR> {
   const baseTx = Transaction.fromCbor(TxCBOR(txCbor));
@@ -25,7 +25,7 @@ export async function validateTx(
   const sponsorInputMap: Map<
     Serialization.TransactionInput,
     Serialization.TransactionOutput
-  > = await this.getSponsoredInputMap(baseTx, poolDetails.pubKey as unknown as Hash28ByteBase16);
+  > = await (this as Gasless).getSponsoredInputMap(baseTx, poolDetails.pubKey as unknown as Hash28ByteBase16);
 
   console.log(sponsorInputMap)
 

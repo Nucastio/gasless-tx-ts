@@ -1,7 +1,6 @@
 import { BlockfrostProvider, MeshWallet } from "@meshsdk/core";
 import { Hash28ByteBase16, Serialization, TokenMap, Transaction } from "@meshsdk/core-cst";
 import { TxCBOR } from "utils";
-import express from "express"
 
 export type WalletCredentials =
   | {
@@ -40,25 +39,12 @@ export interface PoolConditions {
   corsSettings?: string[];
 }
 
-type PoolParams = {
-  mode: "pool";
-  wallet: { network: 0 | 1; key: WalletCredentials };
-  apiKey: string;
-  conditions: PoolConditions;
-};
-
 type SponsorParams = {
-  mode: "sponsor";
   apiKey: string;
 };
 
-export type ConstructorParams = PoolParams | SponsorParams;
+export type ConstructorParams = SponsorParams;
 
-// export interface ConstructorParams {
-//   wallet: { network: 0 | 1; key: WalletCredentials };
-//   conditions: PoolConditions;
-//   apiKey: string;
-// }
 
 export interface SponsorTxParams {
   txCbor: string;
@@ -75,10 +61,10 @@ export interface ValidateTxParams {
 }
 
 export declare interface ITransaction {
-  sponsorTx: (this: Gasless | GaslessClient,
+  sponsorTx: (this: Gasless,
     { txCbor, poolId, utxo }: SponsorTxParams) => Promise<TxCBOR>;
   validateTx: (
-    this: Gasless | GaslessClient,
+    this: Gasless,
     { txCbor, poolSignServer }: ValidateTxParams
   ) => Promise<TxCBOR>;
 }
@@ -89,47 +75,6 @@ export type CUTxO = {
 };
 
 export declare class Gasless {
-  conditions?: PoolConditions;
-  app?: express.Application;
-  inAppWallet?: MeshWallet;
-  blockchainProvider: BlockfrostProvider;
-
-  sponsorTx: ITransaction["sponsorTx"];
-  validateTx: ITransaction["validateTx"];
-
-  constructor(props: ConstructorParams);
-
-  listen: (port?: number) => Promise<{
-    error: string;
-  } | undefined>;
-
-  setConditions: (newConditions: PoolConditions) => void;
-  
-  getSponsoredInputMap: (
-    this: Gasless,
-    baseTx: Transaction,
-    sponsoredPoolHash?: Hash28ByteBase16
-  ) => Promise<
-    Map<
-      Serialization.TransactionInput,
-      Serialization.TransactionOutput
-    >
-  >;
-
-  getProducedUtxos: (baseTx: Transaction, sponsoredPoolHash?: Hash28ByteBase16) => CUTxO[]
-
-  getConsumedUtxos: (sponsorInputMap: Map<
-    Serialization.TransactionInput,
-    Serialization.TransactionOutput
-  >) => CUTxO[]
-
-  validateFeeDifference: (consumed: CUTxO[], produced: CUTxO[], fee: bigint) => void
-  validateAssets: (consumed: CUTxO[], produced: CUTxO[], sponsoredPoolHash?: Hash28ByteBase16) => void
-  validateTokenRequirements: (baseTx: Transaction, sponsoredPoolHash?: Hash28ByteBase16) => Promise<void>;
-  validateWhitelist: (baseTx: Transaction) => Promise<void>;
-}
-
-export declare class GaslessClient implements Omit<Gasless, 'listen'> {
   conditions?: PoolConditions;
   inAppWallet?: MeshWallet;
   blockchainProvider: BlockfrostProvider;

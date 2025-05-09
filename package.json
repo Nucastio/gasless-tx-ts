@@ -1,12 +1,12 @@
 {
   "name": "@nucastio/gasless",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Gasless Tx Library for Cardano",
   "author": "Nucast",
   "homepage": "https://nucast.io",
   "repository": {
     "type": "git",
-    "url": ""
+    "url": "https://github.com/Nucastio/gasless-tx-ts"
   },
   "license": "ISC",
   "keywords": [
@@ -65,5 +65,18 @@
   },
   "directories": {
     "test": "tests"
+  },
+  "exports": {
+    ".": {
+      "require": "./dist/cjs/gasless.js",
+      "import": "./dist/esm/gasless.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./client": {
+      "browser": "./dist/browser/gaslessClient.mjs",
+      "require": "./dist/browser/gaslessClient.mjs",
+      "import": "./dist/browser/gaslessClient.mjs",
+      "types": "./dist/client.d.ts"
+    }
   }
 }
