@@ -63,6 +63,7 @@ describe("End-to-End", () => {
 
     const sponsoredTx = await gaslessPool.sponsorTx({
       poolId: gaslessPool.inAppWallet?.addresses.baseAddressBech32!,
+      changeAddress:"",
       txCbor: unsignedTx,
     });
 

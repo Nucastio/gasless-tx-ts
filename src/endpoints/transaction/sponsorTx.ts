@@ -27,6 +27,7 @@ function isValidUTxO(utxo: any): utxo is UTxO {
 export async function sponsorTx(this: Gasless | GaslessClient, {
   txCbor,
   utxo,
+  changeAddress,
   poolId,
 }: SponsorTxParams): Promise<TxCBOR> {
 
@@ -35,6 +36,9 @@ export async function sponsorTx(this: Gasless | GaslessClient, {
   }
   if (!poolId || typeof poolId !== 'string') {
     throw new Error('Invalid poolId');
+  }
+  if (!changeAddress || typeof changeAddress !== 'string') {
+    throw new Error('Invalid changeAddress');
   }
   if (utxo && !isValidUTxO(utxo)) {
     throw new Error('Invalid UTxO');

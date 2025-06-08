@@ -63,6 +63,7 @@ export type ConstructorParams = PoolParams | SponsorParams;
 export interface SponsorTxParams {
   txCbor: string;
   poolId: string;
+  changeAddress: string;
   utxo?: {
     txHash: string;
     outputIndex: number;
@@ -76,7 +77,7 @@ export interface ValidateTxParams {
 
 export declare interface ITransaction {
   sponsorTx: (this: Gasless,
-    { txCbor, poolId, utxo }: SponsorTxParams) => Promise<TxCBOR>;
+    { txCbor, poolId, utxo, changeAddress }: SponsorTxParams) => Promise<TxCBOR>;
   validateTx: (
     this: Gasless,
     { txCbor, poolSignServer }: ValidateTxParams

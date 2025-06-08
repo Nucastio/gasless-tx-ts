@@ -74,6 +74,7 @@ describe("Concurrent transaction processing", () => {
             const sponsoredTx = await gaslessPool.sponsorTx({
                 poolId: gaslessPool.inAppWallet?.addresses.baseAddressBech32!,
                 txCbor: unsignedTx,
+                changeAddress: ""
                 utxo: {
                     txHash: utxo?.input.txHash!,
                     outputIndex: utxo?.input.outputIndex!
