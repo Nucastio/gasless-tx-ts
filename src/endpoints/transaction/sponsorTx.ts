@@ -7,7 +7,8 @@ import {
   toValue,
   Ed25519KeyHashHex,
   deserializeAddress,
-  Serialization
+  Serialization,
+  TokenMap
 } from "@meshsdk/core-cst";
 
 import { Gasless, GaslessClient, SponsorTxParams } from "../../@types/types";
@@ -17,10 +18,10 @@ import { UTxO, keepRelevant } from "@meshsdk/core";
 const DEFAULT_FEE_ASSET = new Map().set("lovelace", "3000000");
 
 function isValidUTxO(utxo: any): utxo is UTxO {
-  return utxo && 
-         typeof utxo === 'object' &&
-         typeof utxo.txHash === 'string' &&
-         typeof utxo.outputIndex === 'number';
+  return utxo &&
+    typeof utxo === 'object' &&
+    typeof utxo.txHash === 'string' &&
+    typeof utxo.outputIndex === 'number';
 }
 
 
@@ -109,13 +110,15 @@ export async function sponsorTx(this: Gasless | GaslessClient, {
 
   const txOutputs = baseTx.body().outputs();
 
+  const updatedOutputs: TransactionOutput[] = [...txOutputs.values()];
+
+
   let sponsorOutput = new TransactionOutput(
     toCardanoAddress(sponsorUtxo.output.address),
     toValue(sponsorUtxo.output.amount)
   );
 
   const updatedInputs: TransactionInput[] = [...inputSet.values()];
-  const updatedOutputs: TransactionOutput[] = [...txOutputs.values()];
 
   const sponsorInput = new TransactionInput(
     TransactionId(sponsorUtxo.input.txHash),
@@ -195,14 +198,51 @@ export async function sponsorTx(this: Gasless | GaslessClient, {
     toValue(
       sponsorUtxo.output.amount.map(a => ({
         ...a,
-        quantity: a.unit === "lovelace" 
-          ? String(BigInt(a.quantity) - calculatedFee) 
+        quantity: a.unit === "lovelace"
+          ? String(BigInt(a.quantity) - calculatedFee)
           : a.quantity
       }))
     )
   );
 
   const finalOutputs: TransactionOutput[] = [...txOutputs.values()];
+
+  const consumed = [...inputUtxoMap.values()].reduce(
+    (acc, utxo) =>
+      acc.concat({
+        assets: utxo.amount().multiasset(),
+        lovelace: utxo.amount().coin(),
+      }),
+    [] as {
+      lovelace: bigint;
+      assets: TokenMap | undefined;
+    }[]
+  )
+
+  const produced = baseTx.body().outputs()
+    .map(output => ({
+      assets: output.amount().multiasset(),
+      lovelace: output.amount().coin(),
+    }))
+
+  const diff = consumed.reduce(
+    (acc, utxo) => acc + utxo.lovelace,
+    0n - produced.reduce((acc, utxo) => acc + utxo.lovelace, 0n)
+  );
+
+  if (diff < 0n) {
+    throw new Error("Transaction outputs exceed inputs in lovelace");
+  }
+
+  if (diff > 0n) {
+    for (const [i, output] of finalOutputs.entries()) {
+      if (output.address().getProps().paymentPart?.hash === deserializeAddress(changeAddress).asBase()?.getPaymentCredential().hash) {
+        output.amount().setCoin(output.amount().coin() + diff);
+        finalOutputs[i] = new TransactionOutput(output.address(), output.amount());
+        break;
+      }
+    }
+  }
 
   finalOutputs.push(adjustedSponsorOutput);
 

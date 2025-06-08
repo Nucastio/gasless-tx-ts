@@ -33,7 +33,7 @@
   },
   "devDependencies": {
     "@microsoft/api-extractor": "^7.19.4",
-    "@nucastio/gasless": "^1.0.1",
+    "@nucastio/gasless": "file:./",
     "@rollup/plugin-commonjs": "^21.0.1",
     "@rollup/plugin-json": "^6.1.0",
     "@rollup/plugin-node-resolve": "^13.1.3",
