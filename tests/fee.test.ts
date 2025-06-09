@@ -4,7 +4,7 @@ import {
   MeshTxBuilder,
 } from "@meshsdk/core";
 
-describe("End-to-End", () => {
+describe("Fee set to the transaction", () => {
   let gaslessPool: Gasless;
   let server: any;
 
@@ -44,8 +44,7 @@ describe("End-to-End", () => {
 
     const txBuilder = new MeshTxBuilder({
       fetcher: gaslessPool.blockchainProvider,
-      verbose: true,
-      isHydra: true,
+      verbose: true
     });
 
     const utxos = await userWallet.getUtxos();
@@ -55,15 +54,15 @@ describe("End-to-End", () => {
         "addr_test1qrs5h59fwz22rzj2fsrlcn7lvqq2wch45h7wmm77n6a5etmsn92qd9m6uycped2f80k6evsmmmrfsc55jsq93daae0ustcpskv",
         [{ unit: "lovelace", quantity: "1000000" }]
       )
-      .setFee("0")
       .changeAddress(userWallet.addresses.baseAddress?.toBech32()!)
-      .readOnlyTxInReference("ab78e8acf6a9ba6ce0d38e7d2d1cb4f9fb0597f5feacaf6dcbd96ed4d69cd8c0", 0)
-      .selectUtxosFrom(utxos, undefined, undefined, false)
+      .selectUtxosFrom(utxos)
       .complete();
+
+    console.log(unsignedTx, "UNSIGNED TX")
 
     const sponsoredTx = await gaslessPool.sponsorTx({
       poolId: gaslessPool.inAppWallet?.addresses.baseAddressBech32!,
-      changeAddress:"",
+      changeAddress: userWallet.addresses.baseAddressBech32!,
       txCbor: unsignedTx,
     });
 
@@ -73,8 +72,6 @@ describe("End-to-End", () => {
       txCbor: sponsoredTx,
       poolSignServer: "http://localhost:5000",
     });
-
-    console.log(validated)
 
     expect(validated).toBeDefined();
   }, 60000);

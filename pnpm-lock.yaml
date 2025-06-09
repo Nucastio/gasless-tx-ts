@@ -26,8 +26,8 @@ devDependencies:
     specifier: ^7.19.4
     version: 7.50.0(@types/node@22.13.4)
   '@nucastio/gasless':
-    specifier: ^1.0.1
-    version: 1.0.1(@babel/core@7.26.9)(@bufbuild/protobuf@1.10.0)(react-dom@19.0.0)(react@19.0.0)
+    specifier: file:./
+    version: file:(@babel/core@7.26.9)(@bufbuild/protobuf@1.10.0)(react-dom@19.0.0)(react@19.0.0)
   '@rollup/plugin-commonjs':
     specifier: ^21.0.1
     version: 21.1.0(rollup@2.79.2)
@@ -1257,34 +1257,6 @@ packages:
     dependencies:
       '@nodelib/fs.scandir': 2.1.5
       fastq: 1.19.0
-    dev: true
-
-  /@nucastio/gasless@1.0.1(@babel/core@7.26.9)(@bufbuild/protobuf@1.10.0)(react-dom@19.0.0)(react@19.0.0):
-    resolution: {integrity: sha512-28KT9lkz2sctKbhoC2sQK3KHWOu/Pr6ZPRqGpK6WR+nZfpnkn/pU4fZPcJPAZmOFr/XkASvmR1bthxRnvUxzWA==, tarball: https://registry.npmjs.org/@nucastio/gasless/-/gasless-1.0.1.tgz}
-    dependencies:
-      '@meshsdk/core': 1.9.0-beta.3(@babel/core@7.26.9)(@bufbuild/protobuf@1.10.0)(react-dom@19.0.0)(react@19.0.0)
-      '@meshsdk/core-cst': 1.9.0-beta.3
-      axios: 1.7.9
-      cors: 2.8.5
-      express: 4.21.2
-    transitivePeerDependencies:
-      - '@babel/core'
-      - '@bufbuild/protobuf'
-      - '@dcspark/cardano-multiplatform-lib-asmjs'
-      - '@dcspark/cardano-multiplatform-lib-browser'
-      - '@dcspark/cardano-multiplatform-lib-nodejs'
-      - '@types/react'
-      - '@types/react-dom'
-      - bare-buffer
-      - bufferutil
-      - debug
-      - encoding
-      - react
-      - react-dom
-      - rxjs
-      - supports-color
-      - tailwindcss
-      - utf-8-validate
     dev: true
 
   /@radix-ui/primitive@1.1.1:
@@ -6469,4 +6441,34 @@ packages:
   /yocto-queue@0.1.0:
     resolution: {integrity: sha512-rVksvsnNCdJ/ohGc6xgPwyN8eheCxsiLM8mxuE/t/mOVqJewPuO1miLpTHQiRgTKCLexL4MeAFVagts7HmNZ2Q==, tarball: https://registry.npmjs.org/yocto-queue/-/yocto-queue-0.1.0.tgz}
     engines: {node: '>=10'}
+    dev: true
+
+  file:(@babel/core@7.26.9)(@bufbuild/protobuf@1.10.0)(react-dom@19.0.0)(react@19.0.0):
+    resolution: {directory: '', type: directory}
+    id: 'file:'
+    name: '@nucastio/gasless'
+    dependencies:
+      '@meshsdk/core': 1.9.0-beta.3(@babel/core@7.26.9)(@bufbuild/protobuf@1.10.0)(react-dom@19.0.0)(react@19.0.0)
+      '@meshsdk/core-cst': 1.9.0-beta.3
+      axios: 1.7.9
+      cors: 2.8.5
+      express: 4.21.2
+    transitivePeerDependencies:
+      - '@babel/core'
+      - '@bufbuild/protobuf'
+      - '@dcspark/cardano-multiplatform-lib-asmjs'
+      - '@dcspark/cardano-multiplatform-lib-browser'
+      - '@dcspark/cardano-multiplatform-lib-nodejs'
+      - '@types/react'
+      - '@types/react-dom'
+      - bare-buffer
+      - bufferutil
+      - debug
+      - encoding
+      - react
+      - react-dom
+      - rxjs
+      - supports-color
+      - tailwindcss
+      - utf-8-validate
     dev: true

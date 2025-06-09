@@ -118,11 +118,6 @@ export class Gasless {
       0n - produced.reduce((acc, utxo) => acc + utxo.lovelace, 0n)
     );
 
-    console.log(consumed.reduce(
-      (acc, utxo) => acc + utxo.lovelace,
-      0n
-    ),  produced.reduce((acc, utxo) => acc + utxo.lovelace, 0n))
-
     if (diff !== fee) {
       throw new ValidationError('FeeMismatch', `Fee difference ${diff} does not match expected fee ${fee}`);
     }
