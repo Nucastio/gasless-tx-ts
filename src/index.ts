@@ -1,222 +1,129 @@
-import express from "express";
-import type {
-  WalletCredentials,
-  PoolConditions,
-  ConstructorParams,
-  ITransaction,
-  CUTxO,
-} from "./@types/types";
+import { Transaction } from "@meshsdk/core-cst";
+import { GaslessCore } from "./core.js";
+import { GaslessError } from "./errors.js";
+import { TxCBOR } from "./hex.js";
+import { startPoolServer } from "./server.js";
+import type { GaslessOptions, ListenOptions, PoolInfo, PoolServer } from "./types.js";
+import { PoolWallet } from "./wallet.js";
 
-import { sponsorTx } from "endpoints/transaction/sponsorTx";
-import { validateTx } from "endpoints/transaction/validateTx";
-import { listen } from "endpoints/listen";
-import { MeshWallet } from "@meshsdk/core";
-import { BlockfrostProvider } from "@meshsdk/core";
-import { Hash28ByteBase16, Serialization, toCardanoAddress, TokenMap, toValue, Transaction, TransactionOutput } from "@meshsdk/core-cst";
-import { comparisons, ValidationError } from "utils";
+export { GaslessCore, comparisons, paymentKeyHashOf, utxosToAssets } from "./core.js";
+export { GaslessError, ValidationError, isGaslessError } from "./errors.js";
+export type { GaslessErrorCode } from "./errors.js";
+export {
+  calculateFees,
+  countNumberOfRequiredWitnesses,
+  createDummyTx,
+  referenceScriptFee,
+} from "./fees.js";
+export { BlockfrostProvider } from "./provider.js";
+export type { BlockfrostProviderOptions } from "./provider.js";
+export { PoolWallet } from "./wallet.js";
+export { startPoolServer } from "./server.js";
+export type { PoolServerHandlers } from "./server.js";
+export * from "./types.js";
 
-export class Gasless {
-  inAppWallet?: MeshWallet;
-  conditions?: PoolConditions;
-  app?: express.Application;
+/**
+ * Cardano gasless transactions.
+ *
+ * In `sponsor` mode it splices a pool UTxO into a user's transaction so the
+ * pool pays the fee. In `pool` mode it also owns the signing key and can run
+ * the HTTP server that co-signs transactions meeting the pool's conditions.
+ */
+export class Gasless extends GaslessCore {
+  readonly mode: "pool" | "sponsor";
+  readonly wallet?: PoolWallet;
 
-  blockchainProvider: BlockfrostProvider;
-  sponsorTx: ITransaction["sponsorTx"];
-  validateTx: ITransaction["validateTx"];
+  private server?: PoolServer;
 
-  constructor(props: ConstructorParams) {
-    this.blockchainProvider = new BlockfrostProvider(props.apiKey);
+  constructor(options: GaslessOptions) {
+    super(options);
 
-    if (props.mode === "pool") {
-      this.conditions = props.conditions;
-      this.inAppWallet = new MeshWallet({
-        networkId: props.wallet.network,
-        fetcher: this.blockchainProvider,
-        submitter: this.blockchainProvider,
-        key: props.wallet.key,
-      });
-      this.app = express();
+    this.mode = options.mode;
+    if (options.mode === "pool") {
+      this.wallet = new PoolWallet(options.wallet);
     }
-
-    this.validateTx = validateTx.bind(this);
-    this.sponsorTx = sponsorTx.bind(this);
   }
 
-  listen = listen;
-
-  setConditions(newConditions: PoolConditions){
-    this.conditions = newConditions;
+  /** Bech32 address of the pool wallet (pool mode only). */
+  get address(): string {
+    return this.requireWallet().address;
   }
 
-  async getSponsoredInputMap(this: Gasless, baseTx: Transaction, sponsoredPoolHash?: Hash28ByteBase16) {
-    const sponsorInputMap: Map<
-      Serialization.TransactionInput,
-      Serialization.TransactionOutput
-    > = new Map();
+  /** What this pool publishes to sponsors at `GET /conditions`. */
+  poolInfo(): PoolInfo {
+    const wallet = this.requireWallet();
+    return {
+      address: wallet.address,
+      paymentKeyHash: wallet.paymentKeyHash,
+      conditions: this.conditions,
+    };
+  }
 
-    const inputSet = baseTx.body().inputs();
+  /**
+   * Validate a sponsored transaction against this pool's conditions and add
+   * the pool's signature.
+   *
+   * This is the authoritative check — a sponsor's client-side validation is
+   * only a fast-failure convenience and is never trusted here.
+   */
+  async validateAndSign(txCbor: string): Promise<string> {
+    const wallet = this.requireWallet();
+    const baseTx = Transaction.fromCbor(TxCBOR(txCbor));
+    const resolved = await this.resolveInputs(baseTx);
 
-    for (const input of inputSet.values()) {
-      const [inputInfo] = await this.blockchainProvider.fetchUTxOs(
-        input.transactionId(),
-        parseInt(input.index().toString())
+    await this.validateConditions(baseTx, resolved, {
+      address: wallet.address,
+      paymentKeyHash: wallet.paymentKeyHash,
+    });
+
+    return wallet.signTx(txCbor);
+  }
+
+  /**
+   * Start the pool signing server.
+   *
+   * Resolves once the socket is actually listening, and hands back a handle so
+   * the server can be shut down — call `close()` when you are done with it.
+   */
+  async listen(portOrOptions: number | ListenOptions = 8080): Promise<PoolServer> {
+    this.requireWallet();
+
+    if (this.server) {
+      throw new GaslessError(
+        "InvalidInput",
+        `Pool server is already listening on port ${this.server.port}.`,
       );
-
-      if (!inputInfo) {
-        throw new Error(`No UTxO found for transaction ${input.transactionId()} index ${input.index()}`);
-      }
-
-      const address = toCardanoAddress(inputInfo.output.address);
-
-      if (
-        address.getProps().paymentPart?.hash ===
-        sponsoredPoolHash
-      ) {
-        const cardanoTxOut = new TransactionOutput(
-          address,
-          toValue(inputInfo.output.amount)
-        );
-        sponsorInputMap.set(input, cardanoTxOut);
-      }
     }
 
-    return sponsorInputMap
-  }
+    const options = typeof portOrOptions === "number" ? { port: portOrOptions } : portOrOptions;
 
-  getConsumedUtxos(sponsorInputMap: Map<
-    Serialization.TransactionInput,
-    Serialization.TransactionOutput
-  >): CUTxO[] {
-    return [...sponsorInputMap.values()].reduce(
-      (acc, utxo) =>
-        acc.concat({
-          assets: utxo.amount().multiasset(),
-          lovelace: utxo.amount().coin(),
-        }),
-      [] as {
-        lovelace: bigint;
-        assets: TokenMap | undefined;
-      }[]
-    )
-  }
-
-  getProducedUtxos(baseTx: Transaction, sponsoredPoolHash?: Hash28ByteBase16): CUTxO[] {
-    return baseTx.body().outputs()
-      .filter(utxo =>
-        utxo.address().getProps().paymentPart?.hash ===
-        sponsoredPoolHash
-      )
-      .map(output => ({
-        assets: output.amount().multiasset(),
-        lovelace: output.amount().coin(),
-      }));
-  }
-
-  validateFeeDifference(consumed: CUTxO[], produced: CUTxO[], fee: bigint) {
-    const diff = consumed.reduce(
-      (acc, utxo) => acc + utxo.lovelace,
-      0n - produced.reduce((acc, utxo) => acc + utxo.lovelace, 0n)
+    const server = await startPoolServer(
+      {
+        info: () => this.poolInfo(),
+        sign: (txCbor) => this.validateAndSign(txCbor),
+        allowedOrigins: this.conditions.corsSettings,
+      },
+      options,
     );
 
-    console.log(consumed.reduce(
-      (acc, utxo) => acc + utxo.lovelace,
-      0n
-    ),  produced.reduce((acc, utxo) => acc + utxo.lovelace, 0n))
+    this.server = {
+      ...server,
+      close: async () => {
+        await server.close();
+        this.server = undefined;
+      },
+    };
 
-    if (diff !== fee) {
-      throw new ValidationError('FeeMismatch', `Fee difference ${diff} does not match expected fee ${fee}`);
-    }
+    return this.server;
   }
 
-  validateAssets(consumed: CUTxO[], produced: CUTxO[]) {
-    for (const { assets } of consumed) {
-      if (assets) {
-        for (const [key, value] of assets.entries()) {
-          if (!produced.some((utxo) => utxo.assets?.get(key) === value)) {
-            throw new ValidationError('AssetMismatch', `Missing asset ${key.toString()} in produced UTxOs`);
-          }
-        }
-      }
-    }
-  }
-
-  async validateTokenRequirements(this: Gasless, baseTx: Transaction, sponsoredPoolHash?: Hash28ByteBase16) {
-
-    if (!this.conditions?.tokenRequirements) {
-      throw new ValidationError("NoTokenRequirements", "No token requirements specified in pool conditions")
-    }
-    const inputSet = baseTx.body().inputs();
-
-    let assetMatchFound = false;
-
-    for (const input of inputSet.values()) {
-      const [inputInfo] = await this.blockchainProvider.fetchUTxOs(
-        input.transactionId(),
-        parseInt(input.index().toString())
+  private requireWallet(): PoolWallet {
+    if (!this.wallet) {
+      throw new GaslessError(
+        "InvalidMode",
+        'This operation requires `mode: "pool"` and a wallet key.',
       );
-
-      if (!inputInfo) {
-        throw new Error(`No UTxO found for transaction ${input.transactionId()} index ${input.index()}`);
-      }
-
-      const inputAddress = toCardanoAddress(inputInfo.output.address);
-      const isSponsorWallet =
-        inputAddress.getProps().paymentPart?.hash ===
-        sponsoredPoolHash;
-
-      if (isSponsorWallet) continue;
-
-      const addressAssets = await this.blockchainProvider.fetchAddressAssets(inputInfo.output.address);
-      const hasValidAsset = this.conditions.tokenRequirements.some(({ unit, comparison, quantity }) => {
-        const value = addressAssets[unit];
-        if (!value) return false;
-
-        const passes = comparisons[comparison]?.(parseInt(value), quantity);
-        if (!passes) {
-          throw new ValidationError(
-            "Asset value check failed",
-            `Expected ${comparison} ${quantity} of ${unit}, but found ${value}`
-          );
-        }
-        return true;
-      });
-
-      if (hasValidAsset) {
-        assetMatchFound = true;
-      }
     }
-
-    if (!assetMatchFound) {
-      throw new ValidationError("MissingRequiredAsset", `No input address holds any of the required assets`);
-    }
-  }
-
-  async validateWhitelist(this: Gasless, baseTx: Transaction) {
-
-    if (!this.conditions?.whitelist) {
-      throw new ValidationError("NoWhitelist", "No whitelist specified in pool conditions")
-    }
-    const inputSet = baseTx.body().inputs();
-
-    let addressMatchFound = false;
-
-    for (const input of inputSet.values()) {
-      const [inputInfo] = await this.blockchainProvider.fetchUTxOs(
-        input.transactionId(),
-        parseInt(input.index().toString())
-      );
-
-      if (!inputInfo) {
-        throw new Error(`No UTxO found for transaction ${input.transactionId()} index ${input.index()}`);
-      }
-
-      if (this.conditions.whitelist.includes(inputInfo.output.address)) {
-        addressMatchFound = true
-      }
-    }
-
-    if (!addressMatchFound) {
-      throw new ValidationError("AddressNotWhitelisted", `Address is not in the whitelist`);
-    }
+    return this.wallet;
   }
 }

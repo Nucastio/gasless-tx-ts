@@ -1,17 +1,23 @@
 {
   "compilerOptions": {
-    "target": "ESNext",
+    "target": "ES2022",
     "module": "ESNext",
-    "moduleResolution": "Node",
-    "lib": ["esnext", "DOM", "DOM.Iterable"],
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022"],
+    "types": ["node"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
     "esModuleInterop": true,
-    "allowSyntheticDefaultImports": true,
+    "skipLibCheck": true,
+    "declaration": true,
     "sourceMap": true,
     "outDir": "dist",
-    "baseUrl": "src",
-    "skipLibCheck": true,
-    "strict": true
+    "rootDir": "."
   },
-  "exclude": ["node_modules", "examples", "build", "tests"]
-
+  "include": ["src", "tests", "*.config.ts"],
+  "exclude": ["node_modules", "dist"]
 }

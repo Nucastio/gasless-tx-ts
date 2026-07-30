@@ -1,223 +1,228 @@
-# Gasless Tx Library
+# @nucastio/gasless
 
-## Installation
+Fee-sponsored ("gasless") transactions for Cardano.
 
-To install the library:
+A user builds a transaction with no fee and no ADA to pay one. A **pool** adds one
+of its own UTxOs, absorbs the network fee out of its own change, and co-signs —
+but only if the transaction meets the rules that pool published. The user signs
+their own inputs and submits. They never hold ADA for fees.
 
-```tsx
+```
+user builds tx  ──▶  sponsorTx()  ──▶  validateTx()  ──▶  user signs  ──▶  submit
+   (fee = 0)         pool UTxO in,      pool server
+                     fee deducted       checks + co-signs
+```
+
+## Install
+
+```bash
 npm install @nucastio/gasless
-
 ```
 
-## Usage
+Requires Node 18 or newer. Two runtime dependencies (`@meshsdk/core-cst`,
+`@meshsdk/common`) plus `bech32`; no HTTP framework, no HTTP client.
 
+## Quick start
 
-```tsx
+### Run a pool
+
+```ts
 import { Gasless } from "@nucastio/gasless";
-```
 
-### Initialization
-
-To initialize the Gasless library, you need to provide parameters based on the mode you are using: `"pool"` or `"sponsor"`.
-
-### Pool Mode
-
-For the pool mode, provide the following parameters:
-
-- `mode`: Set to `"pool"`.
-- `wallet`: An object containing:
-    - `network`: The network to use (0 for testnet, 1 for mainnet).
-    - `key`: Wallet credentials, which can be one of the following types:
-        - `type: "root"`, `bech32: string` - Root key in Bech32 format.
-        - `type: "cli"`, `payment: string`, `stake?: string` - CLI-generated payment and optional stake keys.
-        - `type: "mnemonic"`, `words: string[]` - Mnemonic phrase as an array of words.
-        - `type: "bip32Bytes"`, `bip32Bytes: Uint8Array` - BIP32 private key bytes.
-        - `type: "address"`, `address: string` - Wallet address.
-- `conditions`: Pool conditions, which can include:
-    - `tokenRequirements?: { unit: string, quantity: number, comparison: "eq" | "neq" | "gt" | "gte" | "lt" | "lte" }[]` - Optional array of token requirements specifying asset unit, quantity, and comparison operator.
-    - `whitelist?: string[]` - Optional array of whitelisted addresses.
-    - `corsSettings?: string[]` - Optional array of allowed origins for CORS.
-- `apiKey`: Your Blockfrost API key.
-
-**Example:**
-
-```tsx
-const gaslessPool = new Gasless({
+const pool = new Gasless({
   mode: "pool",
+  apiKey: process.env.BLOCKFROST_PROJECT_ID!,
   wallet: {
-    network: 0,
-    key: {
-      type: "mnemonic",
-      words: ["wood", "bench", "lock", "genuine", "relief", "coral", "guard", "reunion", "follow", "radio", "jewel", "cereal", "actual", "erosion", "recall"],
-    },
+    network: 0, // 0 = testnet, 1 = mainnet
+    key: { type: "mnemonic", words: process.env.POOL_MNEMONIC!.split(" ") },
   },
   conditions: {
-    tokenRequirements: [{ unit: "lovelace", quantity: 1000000, comparison: "gte" }],
-    whitelist: ["addr_test1qrs5h59fwz22rzj2fsrlcn7lvqq2wch45h7wmm77n6a5et"],
-    corsSettings: ["<http://example.com>"],
+    tokenRequirements: [{ unit: "lovelace", quantity: 1_000_000, comparison: "gte" }],
   },
-  apiKey: "your-blockfrost-api-key",
 });
 
+const server = await pool.listen(5050);
+console.log(`pool ${pool.address} listening on ${server.url}`);
+
+// later
+await server.close();
 ```
 
-### Sponsor Mode
+### Sponsor a transaction
 
-For the sponsor mode, provide the following parameters:
+```ts
+import { Gasless } from "@nucastio/gasless";
 
-- `mode`: Set to `"sponsor"`.
-- `apiKey`: Your Blockfrost API key.
+const sponsor = new Gasless({ mode: "sponsor", apiKey: process.env.BLOCKFROST_PROJECT_ID! });
 
-**Example:**
-
-```tsx
-const gaslessSponsor = new Gasless({
-  mode: "sponsor",
-  apiKey: "your-blockfrost-api-key",
+const sponsoredTx = await sponsor.sponsorTx({
+  txCbor: unsignedTxFromYourBuilder,
+  poolId: "addr_test1...", // the pool's address
 });
 
+const coSignedTx = await sponsor.validateTx({
+  txCbor: sponsoredTx,
+  poolSignServer: "http://localhost:5050",
+});
+
+// The user adds their own signature and submits.
+const finalTx = await userWallet.signTx(coSignedTx, true);
+await sponsor.provider.submitTx(finalTx);
 ```
+
+In a browser, import from `@nucastio/gasless/client` instead — same
+`sponsorTx` / `validateTx`, with the signing key and HTTP server left out.
+
+```ts
+import { GaslessClient } from "@nucastio/gasless/client";
+```
+
+## API
+
+### `new Gasless(options)`
+
+| Option       | Mode      | Meaning                                                        |
+| ------------ | --------- | -------------------------------------------------------------- |
+| `mode`       | both      | `"pool"` or `"sponsor"`                                          |
+| `apiKey`     | both\*    | Blockfrost project id; the network comes from its prefix         |
+| `provider`   | both\*    | Any object satisfying `GaslessProvider` — use instead of `apiKey` |
+| `wallet`     | pool      | `{ network, key, accountIndex?, keyIndex? }`                     |
+| `conditions` | pool      | Rules a transaction must meet (see below)                        |
+
+\* Supply exactly one of `apiKey` or `provider`.
+
+Wallet keys accept `{ type: "mnemonic", words }`, `{ type: "root", bech32 }`,
+`{ type: "cli", payment, stake? }`, or `{ type: "bip32Bytes", bip32Bytes }`.
+Derivation is `m/1852'/1815'/account'/0/index`, identical to MeshSDK's
+`MeshWallet`, so an existing pool keeps its address.
+
+### Pool conditions
+
+```ts
+{
+  // At least one non-pool input address must satisfy at least one requirement.
+  tokenRequirements: [{ unit: "lovelace", quantity: 1_000_000, comparison: "gte" }],
+  // At least one input must come from a listed address.
+  whitelist: ["addr_test1..."],
+  // Browser origins allowed to call the pool server.
+  corsSettings: ["https://app.example.com"],
+}
+```
+
+`comparison` is one of `eq`, `neq`, `gt`, `gte`, `lt`, `lte`. Omitted conditions
+are not enforced; `conditions: {}` sponsors any well-formed transaction.
 
 ### Methods
 
-### Pool Mode
+| Method                                        | Mode    | Returns                                    |
+| --------------------------------------------- | ------- | ------------------------------------------ |
+| `sponsorTx({ txCbor, poolId, utxo? })`        | both    | sponsored transaction CBOR                 |
+| `validateTx({ txCbor, poolSignServer })`      | both    | pool-co-signed transaction CBOR            |
+| `listen(port \| options)`                     | pool    | `{ port, url, close() }`                   |
+| `validateAndSign(txCbor)`                     | pool    | co-signed CBOR (what the server calls)     |
+| `poolInfo()`                                  | pool    | `{ address, paymentKeyHash, conditions }`  |
+| `setConditions(conditions)`                   | pool    | updates the rules in place                 |
 
-### `listen(port?: number)`
+### Pool server routes
 
-Starts the server to listen for transaction signing requests. The server handles POST requests to sign transactions and GET requests to retrieve pool conditions.
+- `GET /conditions` → `{ address, paymentKeyHash, conditions }`
+- `POST /` with `{ txCbor }` → `{ data, error, success }`
 
-- **Parameters**:
-    - `port` (optional): The port number to listen on (default is 8080).
-- **Returns**: A `Promise` that resolves to `undefined` when the server starts successfully, or an object `{ error: string }` if an error occurs.
+Rejections carry a machine-readable code, so callers can branch without parsing
+prose:
 
-**Example:**
-
-```tsx
-await gaslessPool.listen(5050);
-// Gasless server is running on port 5050
-
+```json
+{ "data": null, "success": false, "error": { "code": "AddressNotWhitelisted", "message": "..." } }
 ```
 
-### Sponsor Mode
+Codes: `InvalidInput`, `InvalidMode`, `MissingConditions`, `UtxoNotFound`,
+`InsufficientPoolFunds`, `ProviderError`, `FeeMismatch`, `AssetMismatch`,
+`PoolOutputMismatch`, `MissingRequiredAsset`, `TokenRequirementNotMet`,
+`AddressNotWhitelisted`, `SigningServerError`.
 
-### `sponsorTx(params: SponsorTxParams)`
+### Bring your own provider
 
-Sponsors the transaction fee from the pool.
+The library needs four calls, so any MeshSDK provider works as-is, as does
+anything you write yourself:
 
-- **Parameters**:
-    - `txCbor: string` - The CBOR-encoded transaction to sponsor.
-    - `poolId: string` - The address of the pool providing the sponsorship.
-    - `utxo?: { txHash: string, outputIndex: number }` - Optional specific UTxO to use for sponsoring.
-- **Returns**:the CBOR-encoded sponsored transaction (`TxCBOR`).
+```ts
+import { KoiosProvider } from "@meshsdk/provider";
 
-**Example:**
-
-```tsx
-const sponsoredTxCbor = await gaslessSponsor.sponsorTx({
-  txCbor: "transaction-cbor-hex",
-  poolId: "pool-address",
-  utxo: { txHash: "tx-hash", outputIndex: 0 },
-});
-console.log(sponsoredTxCbor);
-
+const pool = new Gasless({ mode: "pool", provider: new KoiosProvider("preprod"), wallet: { ... } });
 ```
 
-### `validateTx(params: ValidateTxParams)`
-
-Validates a sponsored transaction against the pool's conditions and requests the pool to sign it.
-
-- **Parameters**:
-    - `txCbor: string` - The CBOR-encoded transaction to validate.
-    - `poolSignServer: string` - The URL of the pool's signing server (e.g., `"<http://pool-server:5050>"`).
-- **Returns**: Pool signed transaction CBOR (`TxCBOR`).
-
-**Example:**
-
-```tsx
-const validatedTxCbor = await gaslessSponsor.validateTx({
-  txCbor: "sponsored-transaction-cbor",
-  poolSignServer: "<http://pool-server:5050>",
-});
-console.log(validatedTxCbor);
-
-```
-
-
-### Example
-
-```tsx
-import { Gasless } from "@nucastio/gasless";
-
-// Initialize a pool
-const gaslessPool = new Gasless({
-  mode: "pool",
-  wallet: {
-    network: 0,
-    key: {
-      type: "mnemonic",
-      words: ["wood", "bench", "lock", "genuine", "relief", "coral", "guard", "reunion", "follow", "radio", "jewel", "cereal", "actual", "erosion", "recall"],
-    },
-  },
-  conditions: {
-    tokenRequirements: [{ unit: "lovelace", quantity: 1000000, comparison: "gte" }],
-  },
-  apiKey: "your-blockfrost-api-key",
-});
-
-// Start the pool server
-gaslessPool.listen(5050).then(() => console.log("Pool server started"));
-
-// Initialize a sponsor client
-const gaslessSponsor = new Gasless({
-  mode: "sponsor",
-  apiKey: "your-blockfrost-api-key",
-});
-
-// Sponsor a transaction
-async function sponsorTransaction() {
-  const txCbor = "your-transaction-cbor"; // Replace with actual CBOR
-  const poolAddress = "pool-address"; // Replace with actual pool address
-  const sponsoredTx = await gaslessSponsor.sponsorTx({
-    txCbor,
-    poolId: poolAddress,
-  });
-
-  // Validate and sign the transaction
-  const validatedTx = await gaslessSponsor.validateTx({
-    txCbor: sponsoredTx,
-    poolSignServer: "<http://localhost:5050>",
-  });
-
-  console.log("Validated Transaction CBOR:", validatedTx);
+```ts
+interface GaslessProvider {
+  fetchUTxOs(hash: string, index?: number): Promise<UTxO[]>;
+  fetchAddressUTxOs(address: string, asset?: string): Promise<UTxO[]>;
+  fetchProtocolParameters(epoch?: number): Promise<Protocol>;
+  submitTx(tx: string): Promise<string>;
 }
-
-sponsorTransaction().catch(console.error);
-
 ```
 
+## What the pool is protected against
 
-### Running the Pool Server
+The pool server re-runs every check before it signs; a sponsor's client-side
+validation is only a fast-failure convenience and is never trusted.
 
-You can run the Gasless pool as a standalone server to handle gasless transaction requests. Below is an example of how to set up and start the server:
+- **The pool never loses more than the network fee.** Its inputs minus its
+  outputs are compared against the declared fee, so change cannot be skimmed.
+- **Native assets are never moved.** Every token the pool contributes must come
+  back to the pool in the same quantity.
+- **Change must return to the pool's own address**, not merely to its payment
+  key under someone else's stake credential.
+- **The pool's signature is mandatory.** Sponsoring adds the pool's key hash to
+  the transaction's required signers, so a stripped signature invalidates it.
 
-```tsx
-import { GaslessPool } from "@nucastio/gasless";
+## Why `libsodium-wrappers-sumo` is a dependency
 
-const pool = new GaslessPool({
-  wallet: {
-    seedphrase: "your-wallet-seed-phrase".split(" "),
-    private_key: "your-private-key",
-    cli_key: "your-cli-key",
-  },
-  conditions: {
-    whitelist: ["addr1...", "addr2..."],
-  },
-});
+The library never imports it. `@meshsdk/core-cst` reaches it through
+`@cardano-sdk/crypto`, and the `0.7.16` release ships a broken ESM entry point —
+it imports a file that is not published — so any native Node ESM `import` of
+`@meshsdk/core-cst` dies with `ERR_MODULE_NOT_FOUND ... libsodium-sumo.mjs`.
 
-pool.listen({ port: 5050 });
+Pinning `0.7.15` here makes the resolver settle on the last working release for
+everyone downstream, so a plain `npm install` works in ESM out of the box.
+Remove the pin once the upstream ESM build is fixed.
 
+## Development
+
+```bash
+pnpm install
+pnpm test        # offline unit + server tests
+pnpm typecheck
+pnpm lint
+pnpm build
 ```
 
-This code initializes a Gasless pool and starts a server on port 5050. Replace `"your-wallet-seed-phrase"`, `"your-private-key"`, and `"your-cli-key"` with your actual wallet credentials.
+Live preprod tests are opt-in and need a funded pool wallet:
 
----
+```bash
+BLOCKFROST_PROJECT_ID=preprod... POOL_MNEMONIC="word word ..." pnpm test:integration
+```
+
+## Security
+
+Versions up to `1.0.5` committed a working Blockfrost preprod project id and
+wallet mnemonics to this repository, and they remain in the public git history.
+**Rotate that Blockfrost key and move any funds off those wallets.** Never put a
+pool mnemonic in source; read it from the environment or a secret manager.
+
+The pool wallet's key signs transactions on demand for anyone who satisfies its
+conditions. Keep conditions as narrow as your use case allows, and fund the pool
+with only what you are prepared to spend on fees.
+
+## Migrating from 1.x
+
+See [CHANGELOG.md](CHANGELOG.md) for the full list. The short version:
+
+- `listen()` now resolves to `{ port, url, close() }` once the socket is
+  actually listening, instead of resolving early and leaking the server.
+- Error responses are `{ code, message }` objects rather than `{}`.
+- `conditions` is optional, and the pool publishes `address` alongside
+  `paymentKeyHash` at `GET /conditions`.
+- `@meshsdk/core`, `axios`, `express`, and `cors` are no longer dependencies.
+
+## License
+
+ISC
