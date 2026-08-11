@@ -118,7 +118,7 @@ changed, and a security bug in 1.x means upgrading is strongly recommended.
   `maxOutputs`, `maxTxSizeBytes`, `maxFeeLovelace`, `blockedAddresses` and
   `feeBudget`. Exported alongside `DEFAULT_POLICY`, `resolvePolicy` and
   `FeeBudget`.
-- 84 offline tests covering fee maths, witness counting, every validation rule
+- 88 offline tests covering fee maths, witness counting, every validation rule
   in both directions, wallet derivation and signing, provider behaviour, the
   sponsorship policy including both proven exploits, UTxO reservation under
   concurrency, and a full sponsor → serve → validate → sign round trip.

@@ -1,6 +1,7 @@
-import type { Transaction } from "@meshsdk/core-cst";
+import { NativeScript, type Transaction } from "@meshsdk/core-cst";
 import { ValidationError } from "./errors.js";
 import { addKeyHashesFromNativeScript } from "./fees.js";
+import { HexBlob } from "./hex.js";
 import type { SponsorshipPolicy } from "./types.js";
 
 /**
@@ -28,6 +29,10 @@ export const DEFAULT_POLICY = {
   allowReferenceInputs: true,
   maxInputs: 50,
   maxOutputs: 50,
+  // The ledger caps collateral at maxCollateralInputs (3 today); validation
+  // runs before submission, so it needs its own bound.
+  maxCollateralInputs: 3,
+  maxReferenceInputs: 20,
 } satisfies SponsorshipPolicy;
 
 export const resolvePolicy = (policy: SponsorshipPolicy | undefined) => ({
@@ -66,6 +71,25 @@ export const assertBodyPolicy = (baseTx: Transaction, policy: ResolvedPolicy): v
     throw new ValidationError(
       "TooManyInputs",
       `Transaction has ${outputCount} outputs, above this pool's limit of ${policy.maxOutputs}.`,
+    );
+  }
+
+  // Collateral and reference inputs each cost a chain lookup during validation,
+  // so they are bounded too — otherwise they are a free way to burn the pool's
+  // provider quota.
+  const collateralCount = body.collateral()?.values().length ?? 0;
+  if (collateralCount > policy.maxCollateralInputs) {
+    throw new ValidationError(
+      "TooManyInputs",
+      `Transaction has ${collateralCount} collateral inputs, above this pool's limit of ${policy.maxCollateralInputs}.`,
+    );
+  }
+
+  const referenceCount = body.referenceInputs()?.values().length ?? 0;
+  if (referenceCount > policy.maxReferenceInputs) {
+    throw new ValidationError(
+      "TooManyInputs",
+      `Transaction has ${referenceCount} reference inputs, above this pool's limit of ${policy.maxReferenceInputs}.`,
     );
   }
 
@@ -204,16 +228,28 @@ export class FeeBudget {
  * or an address that only the pool's key can unlock. Co-signing the transaction
  * authorizes it, so an attacker could mint under a "pool-issued" policy or
  * unlock script-controlled funds. Value accounting cannot see any of this.
+ *
+ * Takes raw script CBOR rather than the transaction, because a script reaches
+ * the ledger from several places: the witness set, and any input or reference
+ * input carrying it as a `scriptRef`. Checking only the witness set would let
+ * an attacker park the script on-chain and point at it instead.
  */
 export const assertNoPoolKeyScripts = (
-  baseTx: Transaction,
+  scriptsCbor: Iterable<string>,
   poolPaymentKeyHash: string,
-  policy: ResolvedPolicy,
 ): void => {
-  if (policy.allowPoolKeyScripts) return;
+  for (const scriptCbor of scriptsCbor) {
+    let keyHashes: Set<string>;
+    try {
+      keyHashes = addKeyHashesFromNativeScript(
+        NativeScript.fromCbor(HexBlob(scriptCbor)),
+        new Set<string>(),
+      );
+    } catch {
+      // Not a native script (Plutus scripts carry no key hashes to check).
+      continue;
+    }
 
-  for (const script of baseTx.witnessSet().nativeScripts()?.values() ?? []) {
-    const keyHashes = addKeyHashesFromNativeScript(script, new Set<string>());
     if (keyHashes.has(poolPaymentKeyHash)) {
       throw new ValidationError(
         "UnsupportedTransactionField",

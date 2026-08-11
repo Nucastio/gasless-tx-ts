@@ -21,6 +21,7 @@ import {
   lovelace,
   makeUtxo,
   poolWallet,
+  toTxOut,
   userWallet,
 } from "./helpers.js";
 
@@ -99,6 +100,52 @@ describe("collateral", () => {
 
     await expect(gasless.validateAndSign(tampered)).resolves.toBeTypeOf("string");
   });
+
+  it("refuses to send the unspent remainder of pool collateral elsewhere", async () => {
+    // Opting into pool collateral accepts losing `totalCollateral` on failure,
+    // not the rest: the remainder goes to collateralReturn, so pointing that at
+    // the attacker turns a 5 ADA risk into a 500 ADA one.
+    const { gasless, sponsored, poolFatUtxo } = await scenario({
+      policy: { allowPoolCollateral: true },
+    });
+
+    const tampered = rebuild(sponsored, (body) => {
+      body.setCollateral(inputSetOf([poolFatUtxo]));
+      body.setTotalCollateral(5_000_000n);
+      body.setCollateralReturn(toTxOut(user.address, lovelace(495_000_000n)));
+    });
+
+    await expect(gasless.validateAndSign(tampered)).rejects.toMatchObject({
+      code: "PoolCollateralForbidden",
+    });
+  });
+
+  it("accepts collateral change returning to the pool", async () => {
+    const { gasless, sponsored, poolFatUtxo } = await scenario({
+      policy: { allowPoolCollateral: true },
+    });
+
+    const tampered = rebuild(sponsored, (body) => {
+      body.setCollateral(inputSetOf([poolFatUtxo]));
+      body.setTotalCollateral(5_000_000n);
+      body.setCollateralReturn(toTxOut(pool.address, lovelace(495_000_000n)));
+    });
+
+    await expect(gasless.validateAndSign(tampered)).resolves.toBeTypeOf("string");
+  });
+
+  it("bounds how many collateral inputs it will resolve", async () => {
+    const { gasless, sponsored, poolFatUtxo, userCollateral } = await scenario({
+      policy: { maxCollateralInputs: 1 },
+    });
+    const tampered = rebuild(sponsored, (body) =>
+      body.setCollateral(inputSetOf([userCollateral, poolFatUtxo])),
+    );
+
+    await expect(gasless.validateAndSign(tampered)).rejects.toMatchObject({
+      code: "TooManyInputs",
+    });
+  });
 });
 
 describe("scripts gated on the pool key", () => {
@@ -123,6 +170,27 @@ describe("scripts gated on the pool key", () => {
       code: "UnsupportedTransactionField",
     });
     await expect(gasless.validateAndSign(tampered)).rejects.toThrow(/native script/i);
+  });
+
+  it("refuses a pool-key script parked on-chain as a reference script", async () => {
+    // Checking only the witness set is not enough: the ledger accepts a script
+    // supplied by a `scriptRef` on a reference input, so an attacker can park
+    // it on-chain and merely point at it.
+    const { gasless, provider, sponsored } = await scenario({ policy: { allowMint: true } });
+
+    const script = poolPolicyScript();
+    const refUtxo = makeUtxo(user.address, 2_000_000n, { seed: 9 });
+    refUtxo.output.scriptRef = script.toCbor().toString();
+    provider.add(refUtxo);
+
+    const tampered = rebuild(sponsored, (body) => {
+      body.setReferenceInputs(inputSetOf([refUtxo]));
+      body.setMint(new Map([[`${script.hash()}` as never, 1_000_000n]]) as never);
+    });
+
+    await expect(gasless.validateAndSign(tampered)).rejects.toMatchObject({
+      code: "UnsupportedTransactionField",
+    });
   });
 
   it("permits a native script that does not involve the pool's key", async () => {

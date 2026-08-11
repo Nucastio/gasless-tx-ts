@@ -379,8 +379,10 @@ export class GaslessCore {
     // Refuse unsupported features before touching the arithmetic: the pool
     // must never reason about a body it does not fully understand.
     assertBodyPolicy(baseTx, policy);
-    assertNoPoolKeyScripts(baseTx, pool.paymentKeyHash, policy);
-    await this.validateCollateral(baseTx, pool.paymentKeyHash, policy.allowPoolCollateral);
+    if (!policy.allowPoolKeyScripts) {
+      assertNoPoolKeyScripts(await this.collectScripts(baseTx, resolved), pool.paymentKeyHash);
+    }
+    await this.validateCollateral(baseTx, pool, policy.allowPoolCollateral);
 
     const consumed = this.consumedByPool(resolved, pool.paymentKeyHash);
     const produced = this.producedForPool(baseTx, pool.address);
@@ -404,6 +406,34 @@ export class GaslessCore {
   }
 
   /**
+   * Every script the ledger will see, as raw CBOR.
+   *
+   * Scripts reach a transaction from three places: the witness set, and a
+   * `scriptRef` attached to any spent input or reference input. A guard that
+   * only reads the witness set is bypassed by parking the script on-chain.
+   */
+  async collectScripts(baseTx: Transaction, resolved: ResolvedInput[]): Promise<string[]> {
+    const scripts: string[] = [];
+
+    for (const script of baseTx.witnessSet().nativeScripts()?.values() ?? []) {
+      scripts.push(script.toCbor().toString());
+    }
+    for (const { utxo } of resolved) {
+      if (utxo.output.scriptRef) scripts.push(utxo.output.scriptRef);
+    }
+    for (const { utxo } of await this.resolveReferenceInputs(baseTx)) {
+      if (utxo.output.scriptRef) scripts.push(utxo.output.scriptRef);
+    }
+
+    return scripts;
+  }
+
+  /** Resolve the transaction's reference inputs, which are never spent. */
+  async resolveReferenceInputs(baseTx: Transaction): Promise<ResolvedInput[]> {
+    return this.resolveInputSet(baseTx.body().referenceInputs()?.values() ?? []);
+  }
+
+  /**
    * Refuse collateral drawn from pool funds.
    *
    * A failing Plutus script forfeits the whole collateral to the network, so an
@@ -412,22 +442,34 @@ export class GaslessCore {
    */
   async validateCollateral(
     baseTx: Transaction,
-    poolPaymentKeyHash: string,
+    pool: { address: string; paymentKeyHash: string },
     allowPoolCollateral: boolean,
   ): Promise<void> {
-    if (allowPoolCollateral) return;
-    if ((baseTx.body().collateral()?.values().length ?? 0) === 0) return;
+    const body = baseTx.body();
+    if ((body.collateral()?.values().length ?? 0) === 0) return;
 
     const collateral = await this.resolveCollateral(baseTx);
     const atRisk = collateral.filter(
-      ({ output }) => output.address().getProps().paymentPart?.hash === poolPaymentKeyHash,
+      ({ output }) => output.address().getProps().paymentPart?.hash === pool.paymentKeyHash,
     );
+    if (atRisk.length === 0) return;
 
-    if (atRisk.length > 0) {
+    if (!allowPoolCollateral) {
       const lovelace = atRisk.reduce((total, { output }) => total + output.amount().coin(), 0n);
       throw new ValidationError(
         "PoolCollateralForbidden",
         `The transaction puts ${lovelace} lovelace of pool funds up as collateral. A failing script would forfeit it entirely; collateral must come from the requester.`,
+      );
+    }
+
+    // The operator accepts losing `totalCollateral` on a script failure — but
+    // not the remainder. Unspent collateral goes to `collateralReturn`, so an
+    // attacker naming their own address there would pocket the difference.
+    const collateralReturn = body.collateralReturn();
+    if (collateralReturn && collateralReturn.address().toBech32() !== pool.address) {
+      throw new ValidationError(
+        "PoolCollateralForbidden",
+        `Collateral is funded by the pool but its unspent remainder would return to ${collateralReturn.address().toBech32()} instead of ${pool.address}.`,
       );
     }
   }

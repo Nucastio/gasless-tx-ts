@@ -71,6 +71,10 @@ export interface SponsorshipPolicy {
   maxInputs?: number;
   /** Reject transactions with more outputs than this (default 50). */
   maxOutputs?: number;
+  /** Reject transactions with more collateral inputs than this (default 3). */
+  maxCollateralInputs?: number;
+  /** Reject transactions with more reference inputs than this (default 20). */
+  maxReferenceInputs?: number;
   /** Reject transactions whose serialized size exceeds this many bytes. */
   maxTxSizeBytes?: number;
   /** Reject transactions whose fee exceeds this many lovelace. */
