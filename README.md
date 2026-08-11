@@ -254,16 +254,29 @@ validation is only a fast-failure convenience and is never trusted.
   keyed on the remote address; it slows abuse rather than stopping it.
 - **Run behind TLS.** The pool server speaks plain HTTP.
 
-## Why `libsodium-wrappers-sumo` is a dependency
+## ESM and `libsodium-wrappers-sumo`
 
-The library never imports it. `@meshsdk/core-cst` reaches it through
-`@cardano-sdk/crypto`, and the `0.7.16` release ships a broken ESM entry point —
-it imports a file that is not published — so any native Node ESM `import` of
-`@meshsdk/core-cst` dies with `ERR_MODULE_NOT_FOUND ... libsodium-sumo.mjs`.
+`@meshsdk/core-cst` reaches `libsodium-wrappers-sumo` through
+`@cardano-sdk/crypto`, and its `0.7.16` release ships a broken ESM entry point —
+it imports a file that is not published. Any native Node ESM `import` of
+`@meshsdk/core-cst` therefore dies with
+`ERR_MODULE_NOT_FOUND ... libsodium-sumo.mjs`.
 
-Pinning `0.7.15` here makes the resolver settle on the last working release for
-everyone downstream, so a plain `npm install` works in ESM out of the box.
-Remove the pin once the upstream ESM build is fixed.
+This package pins `0.7.15`, which is enough **only if it is your sole path to
+`@meshsdk/core-cst`**. As soon as you depend on `@meshsdk/core-cst` yourself —
+and you will, to build transactions — your package manager hoists `0.7.16` to
+the top of the tree and the pin is bypassed. Add the override to *your*
+`package.json`:
+
+```jsonc
+"overrides":   { "libsodium-wrappers-sumo": "0.7.15" },  // npm
+"pnpm":        { "overrides": { "libsodium-wrappers-sumo": "0.7.15" } },
+"resolutions": { "libsodium-wrappers-sumo": "0.7.15" }   // yarn
+```
+
+Only the root project's overrides take effect, which is why this cannot be
+fixed from inside a dependency. CommonJS consumers are unaffected. Drop the
+override once the upstream ESM build is repaired.
 
 ## Development
 

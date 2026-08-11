@@ -127,7 +127,10 @@ changed, and a security bug in 1.x means upgrading is strongly recommended.
 - A pin on `libsodium-wrappers-sumo@0.7.15`, which the library does not import
   but which `@meshsdk/core-cst` reaches transitively. Its `0.7.16` release ships
   an ESM entry that imports an unpublished file, breaking every native Node ESM
-  import of `@meshsdk/core-cst`. The pin makes a plain install work unaided.
+  import of `@meshsdk/core-cst`. The pin covers installs where this package is
+  the only path to `core-cst`; a project that also depends on `core-cst`
+  directly hoists `0.7.16` past the pin and needs its own `overrides` entry, as
+  the README explains — only the root project's overrides take effect.
 
 ### Migrating
 
