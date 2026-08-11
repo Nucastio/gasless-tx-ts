@@ -78,7 +78,7 @@ export const makeUtxo = (
  * network and the counters let a test assert how many lookups actually happened.
  */
 export class StubProvider implements GaslessProvider {
-  readonly calls = { fetchUTxOs: 0, fetchAddressUTxOs: 0, fetchProtocolParameters: 0, submitTx: 0 };
+  calls = { fetchUTxOs: 0, fetchAddressUTxOs: 0, fetchProtocolParameters: 0, submitTx: 0 };
   readonly submitted: string[] = [];
 
   private readonly utxos = new Map<string, UTxO>();

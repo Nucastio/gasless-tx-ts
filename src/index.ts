@@ -78,9 +78,8 @@ export class Gasless extends GaslessCore {
   async validateAndSign(txCbor: string): Promise<string> {
     const wallet = this.requireWallet();
     const baseTx = Transaction.fromCbor(TxCBOR(txCbor));
-    const resolved = await this.resolveInputs(baseTx);
 
-    await this.validateConditions(baseTx, resolved, {
+    await this.validateConditions(baseTx, {
       address: wallet.address,
       paymentKeyHash: wallet.paymentKeyHash,
     });

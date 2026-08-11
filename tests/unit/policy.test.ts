@@ -7,6 +7,7 @@ import {
   Transaction,
   TransactionId,
   TransactionInput,
+  buildEnterpriseAddress,
   buildRewardAddress,
   deserializeAddress,
 } from "@meshsdk/core-cst";
@@ -134,6 +135,46 @@ describe("collateral", () => {
     await expect(gasless.validateAndSign(tampered)).resolves.toBeTypeOf("string");
   });
 
+  it("charges for the witness a collateral input will need", async () => {
+    // Collateral inputs carry their own vkey witnesses. Leaving them out of
+    // the witness count under-estimates the size, and so the fee, and the node
+    // then refuses the transaction the pool just paid to assemble.
+    const userUtxo = makeUtxo(user.address, 10_000_000n, { seed: 1 });
+    const poolUtxo = makeUtxo(pool.address, 20_000_000n, { seed: 2 });
+    const thirdParty = buildEnterpriseAddress(0, Hash28ByteBase16("ab".repeat(28)))
+      .toAddress()
+      .toBech32();
+    const otherCollateral = makeUtxo(thirdParty, 5_000_000n, { seed: 7 });
+    const provider = new StubProvider([userUtxo, poolUtxo, otherCollateral]);
+
+    const gasless = new Gasless({
+      mode: "pool",
+      provider,
+      wallet: { network: 0, key: { type: "mnemonic", words: POOL_MNEMONIC } },
+      conditions: {},
+    });
+
+    const plain = buildTx([userUtxo], [{ address: user.address, amount: lovelace(10_000_000n) }]);
+    const withCollateral = rebuild(plain, (body) =>
+      body.setCollateral(inputSetOf([otherCollateral])),
+    );
+
+    const feeOf = async (txCbor: string) =>
+      Transaction.fromCbor(
+        (await gasless.sponsorTx({
+          txCbor,
+          poolId: pool.address,
+          utxo: poolUtxo.input,
+        })) as never,
+      )
+        .body()
+        .fee();
+
+    // The collateral signer is a third distinct key, so its witness must show
+    // up in the estimate as extra size.
+    expect(await feeOf(withCollateral)).toBeGreaterThan(await feeOf(plain));
+  });
+
   it("bounds how many collateral inputs it will resolve", async () => {
     const { gasless, sponsored, poolFatUtxo, userCollateral } = await scenario({
       policy: { maxCollateralInputs: 1 },
@@ -242,6 +283,22 @@ describe("body fields the pool has not opted into", () => {
   it("refuses a treasury donation by default", async () => {
     const { gasless, sponsored } = await scenario();
     const tampered = rebuild(sponsored, (body) => body.setDonation(1_000_000n));
+
+    await expect(gasless.validateAndSign(tampered)).rejects.toMatchObject({
+      code: "UnsupportedTransactionField",
+    });
+  });
+
+  it("refuses a protocol parameter update by default", async () => {
+    const { gasless, sponsored } = await scenario();
+    const tampered = rebuild(sponsored, (body) =>
+      body.setUpdate(
+        Serialization.Update.fromCore({
+          epoch: 999 as never,
+          proposedProtocolParameterUpdates: new Map(),
+        }),
+      ),
+    );
 
     await expect(gasless.validateAndSign(tampered)).rejects.toMatchObject({
       code: "UnsupportedTransactionField",

@@ -2,6 +2,7 @@ import {
   Hash28ByteBase16,
   Transaction,
   buildBaseAddress,
+  buildEnterpriseAddress,
   deserializeAddress,
 } from "@meshsdk/core-cst";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -40,17 +41,17 @@ describe("pool value accounting", () => {
         fee,
       ) as never,
     );
-    return { tx, resolved: await core.resolveInputs(tx) };
+    return { tx };
   };
 
   it("accepts a transaction where the pool pays exactly the fee", async () => {
-    const { tx, resolved } = await sponsoredTx(200_000n, 4_800_000n);
-    await expect(core.validateConditions(tx, resolved, poolOf)).resolves.toBeUndefined();
+    const { tx } = await sponsoredTx(200_000n, 4_800_000n);
+    await expect(core.validateConditions(tx, poolOf)).resolves.toBeUndefined();
   });
 
   it("rejects a transaction that takes more from the pool than the fee", async () => {
-    const { tx, resolved } = await sponsoredTx(200_000n, 3_000_000n);
-    await expect(core.validateConditions(tx, resolved, poolOf)).rejects.toThrow(ValidationError);
+    const { tx } = await sponsoredTx(200_000n, 3_000_000n);
+    await expect(core.validateConditions(tx, poolOf)).rejects.toThrow(ValidationError);
   });
 
   it("rejects a transaction with no pool input at all", async () => {
@@ -64,9 +65,9 @@ describe("pool value accounting", () => {
       ) as never,
     );
 
-    await expect(
-      core.validateConditions(tx, await core.resolveInputs(tx), poolOf),
-    ).rejects.toMatchObject({ code: "PoolOutputMismatch" });
+    await expect(core.validateConditions(tx, poolOf)).rejects.toMatchObject({
+      code: "PoolOutputMismatch",
+    });
   });
 
   it("does not credit change sent to the pool key under a foreign stake credential", async () => {
@@ -98,10 +99,37 @@ describe("pool value accounting", () => {
       ) as never,
     );
 
-    expect(core.producedForPool(tx, pool.address)).toHaveLength(0);
-    await expect(
-      core.validateConditions(tx, await core.resolveInputs(tx), poolOf),
-    ).rejects.toMatchObject({ code: "FeeMismatch" });
+    expect(core.producedForPool(tx, poolOf)).toHaveLength(0);
+    await expect(core.validateConditions(tx, poolOf)).rejects.toMatchObject({
+      code: "FeeMismatch",
+    });
+  });
+
+  it("credits change to the pool's enterprise address", async () => {
+    // Same payment key, no stake credential at all. The pool controls it and
+    // no rewards are redirected, so refusing it — as a strict full-address
+    // match did — would strand any pool holding funds there.
+    const enterprise = buildEnterpriseAddress(0, Hash28ByteBase16(pool.paymentKeyHash))
+      .toAddress()
+      .toBech32();
+
+    const userUtxo = makeUtxo(user.address, 10_000_000n, { seed: 1 });
+    const poolUtxo = makeUtxo(pool.address, 5_000_000n, { seed: 2 });
+    provider.add(userUtxo).add(poolUtxo);
+
+    const tx = Transaction.fromCbor(
+      buildTx(
+        [userUtxo, poolUtxo],
+        [
+          { address: user.address, amount: lovelace(10_000_000n) },
+          { address: enterprise, amount: lovelace(4_800_000n) },
+        ],
+        200_000n,
+      ) as never,
+    );
+
+    expect(core.producedForPool(tx, poolOf)).toHaveLength(1);
+    await expect(core.validateConditions(tx, poolOf)).resolves.toBeUndefined();
   });
 
   it("rejects a transaction that walks off with the pool's native assets", async () => {
@@ -120,19 +148,35 @@ describe("pool value accounting", () => {
       ) as never,
     );
 
-    await expect(
-      core.validateConditions(tx, await core.resolveInputs(tx), poolOf),
-    ).rejects.toMatchObject({ code: "AssetMismatch" });
+    await expect(core.validateConditions(tx, poolOf)).rejects.toMatchObject({
+      code: "AssetMismatch",
+    });
   });
 
   it("resolves each input exactly once, however many rules run", async () => {
     core.setConditions({ whitelist: [user.address] });
-    const { tx, resolved } = await sponsoredTx(200_000n, 4_800_000n);
+    const { tx } = await sponsoredTx(200_000n, 4_800_000n);
 
-    const before = provider.calls.fetchUTxOs;
-    await core.validateConditions(tx, resolved, poolOf);
-    // Rules read the already-resolved inputs; only address lookups may follow.
-    expect(provider.calls.fetchUTxOs).toBe(before);
+    provider.calls.fetchUTxOs = 0;
+    await core.validateConditions(tx, poolOf);
+
+    // Two inputs, one lookup each: every rule reads the same resolved set
+    // rather than refetching, as three separate passes used to.
+    expect(provider.calls.fetchUTxOs).toBe(2);
+  });
+
+  it("enforces the input cap before it spends any chain lookups", async () => {
+    // `maxInputs` exists to bound provider calls, so it has to be checked
+    // before the inputs are resolved — otherwise the I/O it guards against has
+    // already happened by the time the limit is consulted.
+    core.setConditions({ policy: { maxInputs: 1 } });
+    const { tx } = await sponsoredTx(200_000n, 4_800_000n);
+
+    provider.calls.fetchUTxOs = 0;
+    await expect(core.validateConditions(tx, poolOf)).rejects.toMatchObject({
+      code: "TooManyInputs",
+    });
+    expect(provider.calls.fetchUTxOs).toBe(0);
   });
 });
 
@@ -155,7 +199,7 @@ describe("pool conditions", () => {
         200_000n,
       ) as never,
     );
-    return { tx, resolved: await core.resolveInputs(tx) };
+    return { tx };
   };
 
   beforeEach(() => {
@@ -165,8 +209,8 @@ describe("pool conditions", () => {
 
   it("accepts a whitelisted input address", async () => {
     core.setConditions({ whitelist: [user.address] });
-    const { tx, resolved } = await validSponsoredTx();
-    await expect(core.validateConditions(tx, resolved, poolOf)).resolves.toBeUndefined();
+    const { tx } = await validSponsoredTx();
+    await expect(core.validateConditions(tx, poolOf)).resolves.toBeUndefined();
   });
 
   /**
@@ -178,27 +222,27 @@ describe("pool conditions", () => {
     core.setConditions({
       whitelist: ["addr_test1vqeux7xwusdju9dvsj8h7mca9aup2k649xvpz9d3l0j4fzs5plnwl"],
     });
-    const { tx, resolved } = await validSponsoredTx();
+    const { tx } = await validSponsoredTx();
 
-    await expect(core.validateConditions(tx, resolved, poolOf)).rejects.toMatchObject({
+    await expect(core.validateConditions(tx, poolOf)).rejects.toMatchObject({
       code: "AddressNotWhitelisted",
     });
   });
 
   it("accepts an address holding enough of a required token", async () => {
     core.setConditions({ tokenRequirements: [{ unit: TOKEN, quantity: 10, comparison: "gte" }] });
-    const { tx, resolved } = await validSponsoredTx();
+    const { tx } = await validSponsoredTx();
     provider.add(makeUtxo(user.address, 2_000_000n, { seed: 3, assets: { [TOKEN]: 25n } }));
 
-    await expect(core.validateConditions(tx, resolved, poolOf)).resolves.toBeUndefined();
+    await expect(core.validateConditions(tx, poolOf)).resolves.toBeUndefined();
   });
 
   it("rejects an address holding too little of a required token", async () => {
     core.setConditions({ tokenRequirements: [{ unit: TOKEN, quantity: 100, comparison: "gte" }] });
-    const { tx, resolved } = await validSponsoredTx();
+    const { tx } = await validSponsoredTx();
     provider.add(makeUtxo(user.address, 2_000_000n, { seed: 3, assets: { [TOKEN]: 5n } }));
 
-    await expect(core.validateConditions(tx, resolved, poolOf)).rejects.toMatchObject({
+    await expect(core.validateConditions(tx, poolOf)).rejects.toMatchObject({
       code: "TokenRequirementNotMet",
     });
   });
@@ -210,18 +254,18 @@ describe("pool conditions", () => {
         { unit: "lovelace", quantity: 1_000_000, comparison: "gte" },
       ],
     });
-    const { tx, resolved } = await validSponsoredTx();
+    const { tx } = await validSponsoredTx();
 
-    await expect(core.validateConditions(tx, resolved, poolOf)).resolves.toBeUndefined();
+    await expect(core.validateConditions(tx, poolOf)).resolves.toBeUndefined();
   });
 
   it("ignores the pool's own holdings when checking requirements", async () => {
     core.setConditions({ tokenRequirements: [{ unit: TOKEN, quantity: 1, comparison: "gte" }] });
-    const { tx, resolved } = await validSponsoredTx();
+    const { tx } = await validSponsoredTx();
     // Only the pool holds the token; the user must qualify on their own.
     provider.add(makeUtxo(pool.address, 2_000_000n, { seed: 4, assets: { [TOKEN]: 500n } }));
 
-    await expect(core.validateConditions(tx, resolved, poolOf)).rejects.toMatchObject({
+    await expect(core.validateConditions(tx, poolOf)).rejects.toMatchObject({
       code: "TokenRequirementNotMet",
     });
   });

@@ -230,16 +230,30 @@ export class GaslessCore {
   /**
    * Value returned to the pool.
    *
-   * Compared against the pool's full address, not just its payment credential:
-   * an output that reuses the payment key with a different stake credential
-   * would still be spendable by the pool but silently redirects its staking
-   * rewards, so it does not count as a return.
+   * An output counts only if the pool's key controls it *and* its stake
+   * credential is the pool's own or absent. Matching the payment credential
+   * alone would accept an output that reuses the pool's payment key under an
+   * attacker's stake credential — spendable by the pool, but silently
+   * redirecting its staking rewards. Matching the full bech32 address is the
+   * other extreme: it would refuse a pool that keeps funds at its enterprise
+   * address, whose change is perfectly safe.
    */
-  producedForPool(baseTx: Transaction, poolAddress: string): PoolValue[] {
+  producedForPool(
+    baseTx: Transaction,
+    pool: { address: string; paymentKeyHash: string },
+  ): PoolValue[] {
+    const poolStakeHash = deserializeAddress(pool.address).getProps().delegationPart?.hash;
+
     return baseTx
       .body()
       .outputs()
-      .filter((output) => output.address().toBech32() === poolAddress)
+      .filter((output) => {
+        const props = output.address().getProps();
+        if (props.paymentPart?.hash !== pool.paymentKeyHash) return false;
+
+        const stakeHash = props.delegationPart?.hash;
+        return stakeHash === undefined || stakeHash === poolStakeHash;
+      })
       .map((output) => ({
         lovelace: output.amount().coin(),
         assets: output.amount().multiasset(),
@@ -364,28 +378,35 @@ export class GaslessCore {
   }
 
   /**
-   * Run every configured rule against an already-resolved transaction.
+   * Run every configured rule against a transaction.
+   *
+   * Resolves the inputs itself rather than taking them, so the cheap
+   * structural limits are always enforced *before* any chain lookup. A caller
+   * that resolved first would have already spent the I/O that `maxInputs`
+   * exists to bound.
    *
    * Each check is awaited: an unawaited rejection here previously meant the
    * pool signed transactions that had failed validation.
    */
   async validateConditions(
     baseTx: Transaction,
-    resolved: ResolvedInput[],
     pool: { address: string; paymentKeyHash: string },
   ): Promise<void> {
     const policy = resolvePolicy(this.conditions.policy);
 
-    // Refuse unsupported features before touching the arithmetic: the pool
-    // must never reason about a body it does not fully understand.
+    // Refuse unsupported features before touching the chain or the arithmetic:
+    // the pool must never reason about a body it does not fully understand.
     assertBodyPolicy(baseTx, policy);
+
+    const resolved = await this.resolveInputs(baseTx);
+
     if (!policy.allowPoolKeyScripts) {
       assertNoPoolKeyScripts(await this.collectScripts(baseTx, resolved), pool.paymentKeyHash);
     }
     await this.validateCollateral(baseTx, pool, policy.allowPoolCollateral);
 
     const consumed = this.consumedByPool(resolved, pool.paymentKeyHash);
-    const produced = this.producedForPool(baseTx, pool.address);
+    const produced = this.producedForPool(baseTx, pool);
 
     if (consumed.length === 0) {
       throw new ValidationError(
@@ -490,16 +511,22 @@ export class GaslessCore {
 
     const txBody = baseTx.body();
     const originalOutputs = txBody.outputs();
-    const resolved = await this.resolveInputs(baseTx);
+    const [resolved, collateral] = await Promise.all([
+      this.resolveInputs(baseTx),
+      this.resolveCollateral(baseTx),
+    ]);
 
+    // Collateral inputs need vkey witnesses too. Leaving them out of the
+    // context under-counts the witnesses, which under-estimates the size and
+    // so the fee, and the node then rejects the transaction outright.
     const inputContext = new Map<string, Serialization.TransactionOutput>(
-      resolved.map(({ input, output }) => [utxoKey(input), output]),
+      [...resolved, ...collateral].map(({ input, output }) => [utxoKey(input), output]),
     );
     const includedScripts = new Set<string>();
     for (const script of baseTx.witnessSet().nativeScripts()?.values() ?? []) {
       includedScripts.add(script.toCbor().toString());
     }
-    for (const { utxo: resolvedUtxo } of resolved) {
+    for (const { utxo: resolvedUtxo } of [...resolved, ...collateral]) {
       if (resolvedUtxo.output.scriptRef) includedScripts.add(resolvedUtxo.output.scriptRef);
     }
 
@@ -596,8 +623,7 @@ export class GaslessCore {
     }
 
     this.setConditions(poolInfo.conditions ?? {});
-    const resolved = await this.resolveInputs(baseTx);
-    await this.validateConditions(baseTx, resolved, poolInfo);
+    await this.validateConditions(baseTx, poolInfo);
 
     const response = await this.requestJson<{
       data?: string;

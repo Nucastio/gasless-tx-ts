@@ -180,6 +180,24 @@ export const assertBodyPolicy = (baseTx: Transaction, policy: ResolvedPolicy): v
       "allowTreasuryOperations",
     );
   }
+
+  if (!policy.allowGovernance && body.update() !== undefined) {
+    refuse(
+      "protocol parameter updates",
+      "a sponsored payment has no business proposing them.",
+      "allowGovernance",
+    );
+  }
+
+  // Fields deliberately left to the ledger, having been considered:
+  //   ttl, validityStartInterval  a validity window costs the pool nothing; a
+  //                               transaction outside it is simply never valid
+  //   networkId, scriptDataHash   the node rejects a wrong value outright, so
+  //                               a bad one wastes the requester's time only
+  //   auxiliaryDataHash           metadata rides along; it moves no value
+  //   totalCollateral             constrained by the ledger to the collateral
+  //                               actually supplied, and pool collateral is
+  //                               refused above unless explicitly allowed
 };
 
 /**
