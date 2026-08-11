@@ -3,6 +3,39 @@ import { GaslessError, ValidationError } from "./errors.js";
 import type { ListenOptions, PoolInfo, PoolServer } from "./types.js";
 
 const DEFAULT_MAX_BODY_BYTES = 256 * 1024;
+/**
+ * Every signature costs the pool a real fee, so the endpoint is rate limited by
+ * default rather than left open for an operator to remember to protect.
+ */
+const DEFAULT_RATE_LIMIT = { windowMs: 60_000, maxRequests: 30 };
+
+/** Fixed-window request counter, keyed by client. */
+class RateLimiter {
+  private readonly hits = new Map<string, number[]>();
+
+  constructor(private readonly limit: { windowMs: number; maxRequests: number }) {}
+
+  allow(key: string, now = Date.now()): boolean {
+    const cutoff = now - this.limit.windowMs;
+    const recent = (this.hits.get(key) ?? []).filter((at) => at > cutoff);
+
+    if (recent.length >= this.limit.maxRequests) {
+      this.hits.set(key, recent);
+      return false;
+    }
+
+    recent.push(now);
+    this.hits.set(key, recent);
+
+    // Bound memory: drop clients whose window has fully expired.
+    if (this.hits.size > 10_000) {
+      for (const [client, times] of this.hits) {
+        if (times.every((at) => at <= cutoff)) this.hits.delete(client);
+      }
+    }
+    return true;
+  }
+}
 
 export interface PoolServerHandlers {
   /** Rules and address the pool publishes at `GET /conditions`. */
@@ -77,6 +110,10 @@ export const startPoolServer = (
 ): Promise<PoolServer> => {
   const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
   const origins = handlers.allowedOrigins;
+  const rateLimiter =
+    options.rateLimit === false
+      ? undefined
+      : new RateLimiter(options.rateLimit ?? DEFAULT_RATE_LIMIT);
 
   const applyCors = (request: IncomingMessage, response: ServerResponse): void => {
     if (!origins?.length) return;
@@ -108,6 +145,20 @@ export const startPoolServer = (
         }
 
         if (request.method === "POST" && path === "/") {
+          const client = request.socket.remoteAddress ?? "unknown";
+
+          if (rateLimiter && !rateLimiter.allow(client)) {
+            sendJson(response, 429, {
+              data: null,
+              error: {
+                code: "SigningServerError",
+                message: "Too many sponsorship requests; try again shortly.",
+              },
+              success: false,
+            });
+            return;
+          }
+
           const raw = await readBody(request, maxBodyBytes);
 
           let payload: { txCbor?: unknown };
@@ -119,6 +170,22 @@ export const startPoolServer = (
 
           if (typeof payload.txCbor !== "string" || payload.txCbor.length === 0) {
             throw new GaslessError("InvalidInput", "Request body must contain a `txCbor` string.");
+          }
+
+          if (options.authorize) {
+            const permitted = await options.authorize({
+              txCbor: payload.txCbor,
+              headers: request.headers,
+              remoteAddress: request.socket.remoteAddress,
+            });
+            if (!permitted) {
+              sendJson(response, 403, {
+                data: null,
+                error: { code: "InvalidInput", message: "Not authorized to request sponsorship." },
+                success: false,
+              });
+              return;
+            }
           }
 
           sendJson(response, 200, {

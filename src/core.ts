@@ -14,6 +14,7 @@ import {
 import { GaslessError, ValidationError } from "./errors.js";
 import { calculateFees, countNumberOfRequiredWitnesses, createDummyTx, utxoKey } from "./fees.js";
 import { TxCBOR } from "./hex.js";
+import { assertBodyPolicy, assertNoPoolKeyScripts, resolvePolicy } from "./policy.js";
 import { resolveProvider } from "./provider.js";
 import type {
   Asset,
@@ -31,6 +32,13 @@ const MIN_SPONSOR_LOVELACE = 3_000_000n;
 /** Ledger constant: every output's min-ADA includes this byte overhead. */
 const MIN_UTXO_OVERHEAD_BYTES = 160n;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+/**
+ * How long a UTxO handed to one sponsorship stays off-limits to the next.
+ *
+ * Long enough for the caller to get the transaction signed and submitted,
+ * short enough that an abandoned attempt frees the funds again.
+ */
+const DEFAULT_RESERVATION_MS = 120_000;
 
 export const comparisons: Record<ComparisonOperator, (a: bigint, b: bigint) => boolean> = {
   gt: (a, b) => a > b,
@@ -105,11 +113,49 @@ export class GaslessCore {
   readonly provider: GaslessProvider;
   conditions: PoolConditions;
 
+  /**
+   * UTxOs handed to an in-flight sponsorship, keyed by `txHash#index` with the
+   * timestamp they free up again. Without this, concurrent requests all pick
+   * the same largest UTxO and every transaction but one dies on submission.
+   *
+   * In-process only: it serialises one pool server, not a cluster.
+   */
+  private readonly reservations = new Map<string, number>();
+  private readonly reservationMs: number;
+
   constructor(
-    options: ({ apiKey: string } | { provider: GaslessProvider }) & { conditions?: PoolConditions },
+    options: ({ apiKey: string } | { provider: GaslessProvider }) & {
+      conditions?: PoolConditions;
+      /** How long a selected UTxO stays reserved (default 120000 ms). */
+      reservationMs?: number;
+    },
   ) {
     this.provider = resolveProvider(options);
     this.conditions = options.conditions ?? {};
+    this.reservationMs = options.reservationMs ?? DEFAULT_RESERVATION_MS;
+  }
+
+  /** Free a reserved UTxO early, once its transaction has been submitted or abandoned. */
+  releaseUtxo(utxo: { txHash: string; outputIndex: number }): void {
+    this.reservations.delete(`${utxo.txHash}#${utxo.outputIndex}`);
+  }
+
+  private reserve(utxo: UTxO): void {
+    this.reservations.set(
+      `${utxo.input.txHash}#${utxo.input.outputIndex}`,
+      Date.now() + this.reservationMs,
+    );
+  }
+
+  private isReserved(utxo: UTxO): boolean {
+    const key = `${utxo.input.txHash}#${utxo.input.outputIndex}`;
+    const until = this.reservations.get(key);
+    if (until === undefined) return false;
+    if (until <= Date.now()) {
+      this.reservations.delete(key);
+      return false;
+    }
+    return true;
   }
 
   setConditions(conditions: PoolConditions): void {
@@ -124,8 +170,23 @@ export class GaslessCore {
    * and serialized every request.
    */
   async resolveInputs(baseTx: Transaction): Promise<ResolvedInput[]> {
-    const inputs = baseTx.body().inputs().values();
+    return this.resolveInputSet(baseTx.body().inputs().values());
+  }
 
+  /**
+   * Resolve the transaction's collateral inputs.
+   *
+   * Collateral is a separate input set that the value accounting never sees:
+   * it is consumed only when a Plutus script fails, and then it is forfeited
+   * whole. Pool funds must never back it.
+   */
+  async resolveCollateral(baseTx: Transaction): Promise<ResolvedInput[]> {
+    return this.resolveInputSet(baseTx.body().collateral()?.values() ?? []);
+  }
+
+  private async resolveInputSet(
+    inputs: readonly Serialization.TransactionInput[],
+  ): Promise<ResolvedInput[]> {
     return Promise.all(
       inputs.map(async (input) => {
         const txHash = input.transactionId();
@@ -313,6 +374,14 @@ export class GaslessCore {
     resolved: ResolvedInput[],
     pool: { address: string; paymentKeyHash: string },
   ): Promise<void> {
+    const policy = resolvePolicy(this.conditions.policy);
+
+    // Refuse unsupported features before touching the arithmetic: the pool
+    // must never reason about a body it does not fully understand.
+    assertBodyPolicy(baseTx, policy);
+    assertNoPoolKeyScripts(baseTx, pool.paymentKeyHash, policy);
+    await this.validateCollateral(baseTx, pool.paymentKeyHash, policy.allowPoolCollateral);
+
     const consumed = this.consumedByPool(resolved, pool.paymentKeyHash);
     const produced = this.producedForPool(baseTx, pool.address);
 
@@ -331,6 +400,35 @@ export class GaslessCore {
     }
     if (this.conditions.whitelist?.length) {
       await this.validateWhitelist(resolved);
+    }
+  }
+
+  /**
+   * Refuse collateral drawn from pool funds.
+   *
+   * A failing Plutus script forfeits the whole collateral to the network, so an
+   * attacker who can name a pool UTxO as collateral can burn it deliberately —
+   * and none of it shows up in the input/output accounting.
+   */
+  async validateCollateral(
+    baseTx: Transaction,
+    poolPaymentKeyHash: string,
+    allowPoolCollateral: boolean,
+  ): Promise<void> {
+    if (allowPoolCollateral) return;
+    if ((baseTx.body().collateral()?.values().length ?? 0) === 0) return;
+
+    const collateral = await this.resolveCollateral(baseTx);
+    const atRisk = collateral.filter(
+      ({ output }) => output.address().getProps().paymentPart?.hash === poolPaymentKeyHash,
+    );
+
+    if (atRisk.length > 0) {
+      const lovelace = atRisk.reduce((total, { output }) => total + output.amount().coin(), 0n);
+      throw new ValidationError(
+        "PoolCollateralForbidden",
+        `The transaction puts ${lovelace} lovelace of pool funds up as collateral. A failing script would forfeit it entirely; collateral must come from the requester.`,
+      );
     }
   }
 
@@ -548,22 +646,28 @@ export class GaslessCore {
           `Pool UTxO ${pinned.txHash}#${pinned.outputIndex} holds ${lovelaceOf(utxo.output.amount)} lovelace, below the ${MIN_SPONSOR_LOVELACE} needed to sponsor a transaction.`,
         );
       }
+      this.reserve(utxo);
       return utxo;
     }
 
     const utxos = await this.provider.fetchAddressUTxOs(poolId);
+    const funded = utxos.filter((entry) => lovelaceOf(entry.output.amount) >= MIN_SPONSOR_LOVELACE);
     // Largest first: one UTxO must cover the whole fee, and the biggest is the
     // most likely to also clear min-ADA once the fee is deducted.
-    const candidate = utxos
-      .filter((entry) => lovelaceOf(entry.output.amount) >= MIN_SPONSOR_LOVELACE)
+    const candidate = funded
+      .filter((entry) => !this.isReserved(entry))
       .sort((a, b) => Number(lovelaceOf(b.output.amount) - lovelaceOf(a.output.amount)))[0];
 
     if (!candidate) {
       throw new GaslessError(
         "InsufficientPoolFunds",
-        `No UTxO at ${poolId} holds the ${MIN_SPONSOR_LOVELACE} lovelace needed to sponsor a transaction.`,
+        funded.length > 0
+          ? `Every funded UTxO at ${poolId} is reserved by an in-flight sponsorship. Retry shortly, or split the pool into more UTxOs to raise concurrency.`
+          : `No UTxO at ${poolId} holds the ${MIN_SPONSOR_LOVELACE} lovelace needed to sponsor a transaction.`,
       );
     }
+
+    this.reserve(candidate);
     return candidate;
   }
 

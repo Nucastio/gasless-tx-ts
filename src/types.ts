@@ -24,6 +24,70 @@ export interface TokenRequirement {
   comparison: ComparisonOperator;
 }
 
+/**
+ * Which transaction features this pool is willing to co-sign.
+ *
+ * Everything defaults to refused. The pool signs a transaction body it did not
+ * build, and its signature authorizes more than spending its own UTxO, so
+ * anything it cannot reason about is rejected rather than waved through.
+ */
+export interface SponsorshipPolicy {
+  /** Allow minting or burning. Off by default: see `allowPoolKeyScripts`. */
+  allowMint?: boolean;
+  /** Allow certificates (stake registration, DRep, committee, ...). */
+  allowCertificates?: boolean;
+  /** Allow reward withdrawals. */
+  allowWithdrawals?: boolean;
+  /** Allow governance votes and proposals. */
+  allowGovernance?: boolean;
+  /** Allow treasury donation fields. */
+  allowTreasuryOperations?: boolean;
+  /**
+   * Allow pool UTxOs to back collateral.
+   *
+   * Off by default. Collateral is forfeited whole when a Plutus script fails,
+   * so pool-funded collateral lets an attacker burn pool funds deliberately.
+   */
+  allowPoolCollateral?: boolean;
+  /**
+   * Allow native scripts that require the pool's payment key.
+   *
+   * Off by default: the pool's co-signature would satisfy such a script, for
+   * instance a minting policy issued under the pool's identity.
+   */
+  allowPoolKeyScripts?: boolean;
+  /**
+   * Allow Plutus script execution (redeemers).
+   *
+   * On by default — script transactions are ordinary traffic — but turning it
+   * off is the simplest way for a payments-only pool to avoid script fees and
+   * collateral entirely.
+   */
+  allowPlutusScripts?: boolean;
+  /** Allow reference inputs. On by default. */
+  allowReferenceInputs?: boolean;
+
+  /** Reject transactions with more inputs than this (default 50). */
+  maxInputs?: number;
+  /** Reject transactions with more outputs than this (default 50). */
+  maxOutputs?: number;
+  /** Reject transactions whose serialized size exceeds this many bytes. */
+  maxTxSizeBytes?: number;
+  /** Reject transactions whose fee exceeds this many lovelace. */
+  maxFeeLovelace?: bigint;
+
+  /** Bech32 addresses this pool refuses to pay out to. */
+  blockedAddresses?: string[];
+  /**
+   * Cap total fees the pool will underwrite in a rolling window.
+   *
+   * The backstop against an open faucet: without it, anyone who satisfies the
+   * conditions can drain the pool one fee at a time. Counted in-process, so it
+   * bounds a single pool server rather than a cluster.
+   */
+  feeBudget?: { windowMs: number; maxLovelace: bigint };
+}
+
 export interface PoolConditions {
   /**
    * At least one non-pool input address must satisfy at least one requirement.
@@ -33,6 +97,8 @@ export interface PoolConditions {
   whitelist?: string[];
   /** Allowed browser origins for the pool server. Omit to disable CORS. */
   corsSettings?: string[];
+  /** Transaction features this pool will co-sign. Restrictive by default. */
+  policy?: SponsorshipPolicy;
 }
 
 export type WalletCredentials =
@@ -45,7 +111,14 @@ export type WalletCredentials =
 export type NetworkId = 0 | 1;
 
 /** Either bring your own provider, or let the library build a Blockfrost one. */
-export type ProviderOptions = { apiKey: string } | { provider: GaslessProvider };
+export type ProviderOptions = ({ apiKey: string } | { provider: GaslessProvider }) & {
+  /**
+   * How long a pool UTxO handed to one sponsorship stays off-limits to the
+   * next (default 120000 ms). Prevents concurrent requests from handing the
+   * same UTxO to several users, whose transactions would then conflict.
+   */
+  reservationMs?: number;
+};
 
 export type PoolOptions = ProviderOptions & {
   mode: "pool";
@@ -104,4 +177,20 @@ export interface ListenOptions {
   hostname?: string;
   /** Maximum accepted request body in bytes (default 256 KiB). */
   maxBodyBytes?: number;
+  /**
+   * Per-client signing rate limit. Defaults to 30 requests per minute per
+   * remote address. Pass `false` to disable — every signature costs the pool a
+   * real fee, so only do that behind your own gateway.
+   */
+  rateLimit?: { windowMs: number; maxRequests: number } | false;
+  /**
+   * Called before validation, with the parsed request. Return false to refuse.
+   * Use it for API keys, per-user quotas, or anything the built-in conditions
+   * cannot express.
+   */
+  authorize?: (request: {
+    txCbor: string;
+    headers: Record<string, string | string[] | undefined>;
+    remoteAddress?: string;
+  }) => boolean | Promise<boolean>;
 }

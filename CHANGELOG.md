@@ -8,6 +8,24 @@ changed, and a security bug in 1.x means upgrading is strongly recommended.
 
 ### Security
 
+- **Pool funds could be burned as collateral.** Validation read only `inputs`,
+  `outputs` and `fee`, so a pool UTxO named in the `collateral` set was
+  invisible to the value accounting. An attacker submitted an otherwise valid
+  sponsored transaction carrying a deliberately failing Plutus script, and the
+  forfeited collateral came out of the pool. Collateral is now resolved and any
+  pool-funded collateral is refused (`allowPoolCollateral` to opt in).
+- **The pool's signature could authorize a minting policy.** A native script
+  `RequireSignature(poolPaymentKeyHash)` hashes to a policy id that only the
+  pool's key controls, and co-signing satisfied it — so anyone could mint tokens
+  under the pool's identity. Native scripts requiring the pool's key are now
+  refused (`allowPoolKeyScripts` to opt in).
+- **Unknown transaction fields are refused rather than ignored.** The pool signs
+  a whole body while checking a few fields, so mint, certificates, withdrawals,
+  governance and treasury fields are now rejected unless the operator opts in
+  via `conditions.policy`. Future ledger eras default to refusal.
+- **The signing endpoint was an open faucet.** It is now rate limited by default
+  (30 requests/minute per remote address), accepts an `authorize` hook, and
+  supports `maxFeeLovelace` plus a rolling `feeBudget`.
 - **The pool signed transactions that failed its own conditions.**
   `validateTokenRequirements` and `validateWhitelist` are async but were called
   without `await`, so a rejection became an unhandled promise rejection while
@@ -60,6 +78,10 @@ changed, and a security bug in 1.x means upgrading is strongly recommended.
 
 ### Changed
 
+- Concurrent `sponsorTx` calls no longer hand the same pool UTxO to several
+  users. A selected UTxO is reserved in-process for `reservationMs` (default
+  120s) and can be freed early with `releaseUtxo()`; previously every request
+  took the largest UTxO and all but one transaction died on submission.
 - `validateFeeDifference` now requires the pool's net loss to be **at most** the
   fee, rather than exactly the fee. Transactions that also pay the pool — a
   service fee, a purchase — are legitimate and were previously rejected.
@@ -92,9 +114,14 @@ changed, and a security bug in 1.x means upgrading is strongly recommended.
   existing pool keeps its address.
 - `BlockfrostProvider`, a `fetch`-based client with retry on 429/5xx. It also
   maps `min_fee_ref_script_cost_per_byte`, which Mesh's own provider drops.
-- 57 offline tests covering fee maths, witness counting, every validation rule
-  in both directions, wallet derivation and signing, provider behaviour, and a
-  full sponsor → serve → validate → sign round trip.
+- `conditions.policy` (`SponsorshipPolicy`): per-feature opt-ins, `maxInputs`,
+  `maxOutputs`, `maxTxSizeBytes`, `maxFeeLovelace`, `blockedAddresses` and
+  `feeBudget`. Exported alongside `DEFAULT_POLICY`, `resolvePolicy` and
+  `FeeBudget`.
+- 84 offline tests covering fee maths, witness counting, every validation rule
+  in both directions, wallet derivation and signing, provider behaviour, the
+  sponsorship policy including both proven exploits, UTxO reservation under
+  concurrency, and a full sponsor → serve → validate → sign round trip.
 - Opt-in live preprod tests behind `BLOCKFROST_PROJECT_ID` / `POOL_MNEMONIC`.
 - CI on Node 18, 20, and 22.
 - A pin on `libsodium-wrappers-sumo@0.7.15`, which the library does not import

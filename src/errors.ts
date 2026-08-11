@@ -19,6 +19,10 @@ export type GaslessErrorCode =
   | "MissingRequiredAsset"
   | "TokenRequirementNotMet"
   | "AddressNotWhitelisted"
+  | "UnsupportedTransactionField"
+  | "PoolCollateralForbidden"
+  | "TooManyInputs"
+  | "FeeTooHigh"
   // signing server round trip
   | "SigningServerError";
 

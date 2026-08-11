@@ -2,6 +2,7 @@ import { Transaction } from "@meshsdk/core-cst";
 import { GaslessCore } from "./core.js";
 import { GaslessError } from "./errors.js";
 import { TxCBOR } from "./hex.js";
+import { FeeBudget } from "./policy.js";
 import { startPoolServer } from "./server.js";
 import type { GaslessOptions, ListenOptions, PoolInfo, PoolServer } from "./types.js";
 import { PoolWallet } from "./wallet.js";
@@ -17,6 +18,8 @@ export {
 } from "./fees.js";
 export { BlockfrostProvider } from "./provider.js";
 export type { BlockfrostProviderOptions } from "./provider.js";
+export { DEFAULT_POLICY, FeeBudget, assertBodyPolicy, resolvePolicy } from "./policy.js";
+export type { ResolvedPolicy } from "./policy.js";
 export { PoolWallet } from "./wallet.js";
 export { startPoolServer } from "./server.js";
 export type { PoolServerHandlers } from "./server.js";
@@ -33,6 +36,9 @@ export class Gasless extends GaslessCore {
   readonly mode: "pool" | "sponsor";
   readonly wallet?: PoolWallet;
 
+  /** Rolling spend ledger, present only when the pool configures a budget. */
+  readonly feeBudget?: FeeBudget;
+
   private server?: PoolServer;
 
   constructor(options: GaslessOptions) {
@@ -42,6 +48,9 @@ export class Gasless extends GaslessCore {
     if (options.mode === "pool") {
       this.wallet = new PoolWallet(options.wallet);
     }
+
+    const budget = this.conditions.policy?.feeBudget;
+    if (budget) this.feeBudget = new FeeBudget(budget);
   }
 
   /** Bech32 address of the pool wallet (pool mode only). */
@@ -75,6 +84,10 @@ export class Gasless extends GaslessCore {
       address: wallet.address,
       paymentKeyHash: wallet.paymentKeyHash,
     });
+
+    // Charged only once every rule has passed, and only here: this is the one
+    // place a signature — and therefore a real cost to the pool — is produced.
+    this.feeBudget?.charge(baseTx.body().fee());
 
     return wallet.signTx(txCbor);
   }

@@ -106,11 +106,63 @@ Derivation is `m/1852'/1815'/account'/0/index`, identical to MeshSDK's
   whitelist: ["addr_test1..."],
   // Browser origins allowed to call the pool server.
   corsSettings: ["https://app.example.com"],
+  // Which transaction features this pool will co-sign (see below).
+  policy: { allowMint: false, maxFeeLovelace: 2_000_000n },
 }
 ```
 
 `comparison` is one of `eq`, `neq`, `gt`, `gte`, `lt`, `lte`. Omitted conditions
-are not enforced; `conditions: {}` sponsors any well-formed transaction.
+are not enforced — `conditions: {}` sponsors any *plain payment*, though the
+sponsorship policy below still applies.
+
+### Sponsorship policy
+
+A pool signs a transaction body it did not build, and its signature authorizes
+more than spending its own UTxO. So anything the pool cannot reason about is
+refused, and you opt in per feature. New ledger eras therefore default to
+"refuse" rather than silently widening what the pool will sign.
+
+| Flag                      | Default | Refusing it prevents                                                   |
+| ------------------------- | ------- | ---------------------------------------------------------------------- |
+| `allowMint`               | `false` | Tokens minted in a transaction the pool underwrites                    |
+| `allowCertificates`       | `false` | Deposits moved, or credentials bound, under the pool's signature       |
+| `allowWithdrawals`        | `false` | Reward withdrawals folded into the balance                             |
+| `allowGovernance`         | `false` | Votes and proposal deposits                                            |
+| `allowTreasuryOperations` | `false` | Treasury donations moving value out of the balance                     |
+| `allowPoolCollateral`     | `false` | **Pool funds forfeited whole when a Plutus script fails**              |
+| `allowPoolKeyScripts`     | `false` | **A minting policy or script gated on the pool's own key**             |
+| `allowPlutusScripts`      | `true`  | (off = plain payments only)                                            |
+| `allowReferenceInputs`    | `true`  | (off = plain payments only)                                            |
+
+Quantitative limits:
+
+| Setting            | Default | Purpose                                                |
+| ------------------ | ------- | ------------------------------------------------------ |
+| `maxInputs`        | `50`    | Each input costs the pool a chain lookup               |
+| `maxOutputs`       | `50`    | Bounds transaction size                                |
+| `maxTxSizeBytes`   | unset   | Fee scales with size                                   |
+| `maxFeeLovelace`   | unset   | Per-transaction ceiling on what the pool will pay      |
+| `blockedAddresses` | unset   | Payout addresses this pool refuses                     |
+| `feeBudget`        | unset   | `{ windowMs, maxLovelace }` — rolling total spend cap  |
+
+```ts
+const pool = new Gasless({
+  mode: "pool",
+  apiKey: process.env.BLOCKFROST_PROJECT_ID!,
+  wallet: { network: 0, key: { type: "mnemonic", words: mnemonic } },
+  conditions: {
+    whitelist: ["addr_test1..."],
+    policy: {
+      allowPlutusScripts: false,                                  // payments only
+      maxFeeLovelace: 1_500_000n,                                 // per transaction
+      feeBudget: { windowMs: 86_400_000, maxLovelace: 500_000_000n }, // 500 ADA/day
+    },
+  },
+});
+```
+
+`feeBudget` is counted in-process, so it bounds one pool server rather than a
+cluster. For anything shared, use the `authorize` hook on `listen()`.
 
 ### Methods
 
@@ -119,6 +171,7 @@ are not enforced; `conditions: {}` sponsors any well-formed transaction.
 | `sponsorTx({ txCbor, poolId, utxo? })`        | both    | sponsored transaction CBOR                 |
 | `validateTx({ txCbor, poolSignServer })`      | both    | pool-co-signed transaction CBOR            |
 | `listen(port \| options)`                     | pool    | `{ port, url, close() }`                   |
+| `releaseUtxo({ txHash, outputIndex })`        | both    | frees a reserved pool UTxO early           |
 | `validateAndSign(txCbor)`                     | pool    | co-signed CBOR (what the server calls)     |
 | `poolInfo()`                                  | pool    | `{ address, paymentKeyHash, conditions }`  |
 | `setConditions(conditions)`                   | pool    | updates the rules in place                 |
@@ -138,7 +191,12 @@ prose:
 Codes: `InvalidInput`, `InvalidMode`, `MissingConditions`, `UtxoNotFound`,
 `InsufficientPoolFunds`, `ProviderError`, `FeeMismatch`, `AssetMismatch`,
 `PoolOutputMismatch`, `MissingRequiredAsset`, `TokenRequirementNotMet`,
-`AddressNotWhitelisted`, `SigningServerError`.
+`AddressNotWhitelisted`, `UnsupportedTransactionField`,
+`PoolCollateralForbidden`, `TooManyInputs`, `FeeTooHigh`, `SigningServerError`.
+
+`listen()` also accepts `rateLimit` (default 30 requests per minute per remote
+address; pass `false` to disable) and `authorize`, a callback receiving
+`{ txCbor, headers, remoteAddress }` that returns false to refuse with a 403.
 
 ### Bring your own provider
 
@@ -171,8 +229,30 @@ validation is only a fast-failure convenience and is never trusted.
   back to the pool in the same quantity.
 - **Change must return to the pool's own address**, not merely to its payment
   key under someone else's stake credential.
+- **Pool funds cannot back collateral.** Collateral is forfeited whole when a
+  Plutus script fails and never appears in the value accounting, so a
+  transaction naming a pool UTxO as collateral is refused outright.
+- **The pool's key cannot be borrowed by a script.** A native script requiring
+  the pool's payment key — a minting policy issued under the pool's identity,
+  say — is refused, because co-signing would satisfy it.
+- **Unknown features are refused, not ignored.** Mint, certificates,
+  withdrawals, governance and treasury fields are all rejected unless the
+  operator opts in.
 - **The pool's signature is mandatory.** Sponsoring adds the pool's key hash to
   the transaction's required signers, so a stripped signature invalidates it.
+- **Requests are bounded.** The signing endpoint is rate limited by default,
+  transaction size and input counts are capped, and `feeBudget` caps total
+  spend over a rolling window.
+
+### Still your responsibility
+
+- **Fund the pool with only what you will spend on fees.** The key signs on
+  demand for anyone meeting the conditions.
+- **Set `feeBudget` and `maxFeeLovelace`.** Without them a pool that satisfies
+  everyone is drained one legitimate fee at a time.
+- **Use `authorize` for real authentication.** Rate limiting is per-process and
+  keyed on the remote address; it slows abuse rather than stopping it.
+- **Run behind TLS.** The pool server speaks plain HTTP.
 
 ## Why `libsodium-wrappers-sumo` is a dependency
 
